@@ -180,6 +180,71 @@ def visualize_sample(dataset, idx=0):
     plt.close()
 
 
+def test_model_integration():
+    """Test model with dataset"""
+    print("\n" + "=" * 60)
+    print("🧪 TEST 7: Model Integration with cam_K")
+    print("=" * 60)
+    
+    try:
+        from model import ResNetQuaternion
+        
+        # Create model
+        model = ResNetQuaternion(freeze_backbone=True)
+        model.eval()
+        
+        print("✅ Model created successfully!")
+        
+        # Create dataset and dataloader
+        dataset = LineModPoseDataset(
+            root_dir='Linemod_preprocessed_small',
+            split='train',
+            object_ids=[1],
+            image_size=(224, 224),
+            normalize=True
+        )
+        
+        dataloader = torch.utils.data.DataLoader(
+            dataset, batch_size=4, shuffle=False, num_workers=0
+        )
+        
+        # Get one batch
+        batch = next(iter(dataloader))
+        images = batch['image']
+        cam_K = batch['cam_K']
+        gt_rot = batch['rotation']
+        gt_trans = batch['translation']
+        
+        print(f"\n📦 Batch shapes:")
+        print(f"   Images:      {images.shape}")
+        print(f"   cam_K:       {cam_K.shape}")
+        print(f"   GT rotation: {gt_rot.shape}")
+        print(f"   GT trans:    {gt_trans.shape}")
+        
+        # Forward pass
+        with torch.no_grad():
+            pred_rot, pred_trans = model(images, cam_K)
+        
+        print(f"\n🔮 Model predictions:")
+        print(f"   Pred rotation: {pred_rot.shape}")
+        print(f"   Pred trans:    {pred_trans.shape}")
+        print(f"   Quaternion norms: {torch.norm(pred_rot, dim=1)}")
+        
+        # Verify quaternion normalization
+        quat_norms = torch.norm(pred_rot, dim=1)
+        assert torch.allclose(quat_norms, torch.ones_like(quat_norms), atol=1e-5), \
+            "Quaternions not normalized!"
+        
+        print(f"\n✅ Model forward pass successful!")
+        print(f"✅ All quaternions properly normalized!")
+        
+    except ImportError:
+        print("⚠️  Warning: Could not import model. Skipping model test.")
+    except Exception as e:
+        print(f"❌ Model test failed: {e}")
+        raise
+
+
 def run_all_tests():
     """Run all tests"""
     print("\n" + "🚀" * 30)
@@ -204,6 +269,9 @@ def run_all_tests():
         
         # Test 6: Visualization
         visualize_sample(dataset, idx=0)
+        
+        # Test 7: Model integration
+        test_model_integration()
         
         print("\n" + "✅" * 30)
         print("ALL TESTS PASSED!")
