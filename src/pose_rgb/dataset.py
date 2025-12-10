@@ -6,7 +6,7 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
-from pose_utils import convert_rotation_to_quaternion
+from .pose_utils import convert_rotation_to_quaternion
 
 class LineModPoseDataset(Dataset):
     """

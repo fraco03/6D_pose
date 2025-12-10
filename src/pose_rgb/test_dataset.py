@@ -8,8 +8,8 @@ from pathlib import Path
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent / 'src' / 'pose_rgb'))
 
-from dataset import LineModPoseDataset
-from pose_utils import quaternion_to_rotation_matrix
+from .dataset import LineModPoseDataset
+from .pose_utils import quaternion_to_rotation_matrix
 
 def test_dataset_basic():
     """Test basic dataset functionality"""
