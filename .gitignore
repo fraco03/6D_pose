@@ -206,9 +206,8 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
-Linemod**/**
-Linemod**
+# Dataset
+**.zip
+Linemod_preprocessed*/
 
-*.zip
-*.png
-yolo**/**
+yolo11*/**
