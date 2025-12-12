@@ -211,7 +211,9 @@ class LineModPoseDataset(Dataset):
             'object_id': sample['object_id'],                                   # int
             'class_idx': sample['class_idx'],                                   # int
             'cam_K': torch.from_numpy(sample['cam_K']).float(),                 # (3, 3)
-            'img_id': sample['img_id']                                          # int
+            'img_id': sample['img_id'],                                          # int
+            'bbox_info': sample['bbox_info'],       # Input for the Network
+            'bbox_center': sample['bbox_center']    # Helper for the Loss function
         }
 
     def get_class_name(self, class_idx: int) -> str:
