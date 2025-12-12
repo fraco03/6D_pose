@@ -72,3 +72,47 @@ class TranslationLoss(nn.Module):
         loss = self.loss_fn(pred_trans, gt_trans)
         
         return loss
+    
+class CombinedPoseLoss(nn.Module):
+    """
+    Unified Loss function that combines Rotation and Translation errors.
+    
+    It computes the weighted sum:
+    Total_Loss = (w_rot * Rot_Loss) + (w_trans * Trans_Loss)
+    """
+    def __init__(self, w_rot=1.0, w_trans=1.0):
+        """
+        Args:
+            w_rot (float): Weight coefficient for rotation loss.
+            w_trans (float): Weight coefficient for translation loss.
+        """
+        super(CombinedPoseLoss, self).__init__()
+        self.w_rot = w_rot
+        self.w_trans = w_trans
+        
+        # Instantiate the specific sub-losses
+        self.rot_criterion = RotationLoss()
+        self.trans_criterion = TranslationLoss()
+
+    def forward(self, pred_rot, gt_rot, pred_trans, gt_trans):
+        """
+        Calculates the combined loss.
+        
+        Args:
+            pred_rot, gt_rot: Quaternions for rotation.
+            pred_trans, gt_trans: Vectors [dx, dy, z] for translation.
+            
+        Returns:
+            total_loss: The weighted sum (used for backprop).
+            l_rot: The raw rotation loss (for logging/monitoring).
+            l_trans: The raw translation loss (for logging/monitoring).
+        """
+        # 1. Calculate individual losses
+        l_rot = self.rot_criterion(pred_rot, gt_rot)
+        l_trans = self.trans_criterion(pred_trans, gt_trans)
+        
+        # 2. Weighted Sum
+        total_loss = (self.w_rot * l_rot) + (self.w_trans * l_trans)
+        
+        # We return all three so you can print them separately in the progress bar
+        return total_loss, l_rot, l_trans
