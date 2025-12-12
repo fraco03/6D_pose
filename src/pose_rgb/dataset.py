@@ -33,7 +33,7 @@ class LineModPoseDataset(Dataset):
         image_size: Tuple[int, int] = (224, 224),
         transform = None,
         normalize: bool = True,
-        input_standard_dimensions: Optional[Tuple[int, int]] = (640, 480)
+        input_standard_dimensions: Tuple[int, int] = (640, 480)
     ):
         """
         Args:
@@ -112,26 +112,40 @@ class LineModPoseDataset(Dataset):
                     x, y, w, h = map(int, ann['obj_bb'])
                     bbox = [x, y, w, h]
 
-                    # If standard dimensions are provided, validate and clamp bbox now
-                    if self.input_standard_dimensions is not None:
-                        image_w, image_h = self.input_standard_dimensions
+                    #validate bbox
+                    
+                    image_w, image_h = self.input_standard_dimensions
 
-                        # Skip invalid size
-                        if w <= 0 or h <= 0:
-                            continue
+                    # Skip invalid size
+                    if w <= 0 or h <= 0:
+                        continue
+                    
+                    x0, y0 = x, y
+                    x1, y1 = x + w, y + h
                         
-                        x0, y0 = x, y
-                        x1, y1 = x + w, y + h
-                        
-                        # invalid bb 
-                        if x1 <= x0 or y1 <= y0:
-                            continue
-                        
-                        # Require bbox fully inside image bounds (inclusive on edges)
-                        if not (0 <= x0 and 0 <= y0 and x1 <= image_w and y1 <= image_h):
-                            continue
-
-                        
+                    # invalid bb 
+                    if x1 <= x0 or y1 <= y0:
+                        continue
+                    
+                    # Require bbox fully inside image bounds (inclusive on edges)
+                    if not (0 <= x0 and 0 <= y0 and x1 <= image_w and y1 <= image_h):
+                        continue
+                    
+                    # Calculate Center (in pixels)
+                    cx = x + w / 2.0
+                    cy = y + h / 2.0
+                    
+                    
+                    
+                    bbox_info = torch.tensor([
+                        cx / float(image_w),
+                        cy / float(image_h),
+                        w  / float(image_w),
+                        h  / float(image_h)
+                    ], dtype=torch.float32)
+                    
+                    # Create Center Tensor [cx, cy] for Loss Calculation (Target preparation)
+                    bbox_center = torch.tensor([cx, cy], dtype=torch.float32)
 
                     sample = {
                         'object_id': actula_obj_id,
@@ -141,7 +155,9 @@ class LineModPoseDataset(Dataset):
                         'rotation': quaternion_rotation,
                         'translation': translation_vector,
                         'bbox': ann['obj_bb'],  # [x, y, w, h]
-                        'cam_K': np.array(info_data[img_id]['cam_K']).reshape(3, 3)
+                        'cam_K': np.array(info_data[img_id]['cam_K']).reshape(3, 3),
+                        'bbox_info': bbox_info,       # Input for the Network
+                        'bbox_center': bbox_center    # Helper for the Loss function
                     }
 
                     samples.append(sample)
