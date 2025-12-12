@@ -131,22 +131,6 @@ class LineModPoseDataset(Dataset):
                     if not (0 <= x0 and 0 <= y0 and x1 <= image_w and y1 <= image_h):
                         continue
                     
-                    # Calculate Center (in pixels)
-                    cx = x + w / 2.0
-                    cy = y + h / 2.0
-                    
-                    
-                    
-                    bbox_info = torch.tensor([
-                        cx / float(image_w),
-                        cy / float(image_h),
-                        w  / float(image_w),
-                        h  / float(image_h)
-                    ], dtype=torch.float32)
-                    
-                    # Create Center Tensor [cx, cy] for Loss Calculation (Target preparation)
-                    bbox_center = torch.tensor([cx, cy], dtype=torch.float32)
-
                     sample = {
                         'object_id': actula_obj_id,
                         'class_idx': self.id_to_class[actula_obj_id],
@@ -155,9 +139,7 @@ class LineModPoseDataset(Dataset):
                         'rotation': quaternion_rotation,
                         'translation': translation_vector,
                         'bbox': ann['obj_bb'],  # [x, y, w, h]
-                        'cam_K': np.array(info_data[img_id]['cam_K']).reshape(3, 3),
-                        'bbox_info': bbox_info,       # Input for the Network
-                        'bbox_center': bbox_center    # Helper for the Loss function
+                        'cam_K': np.array(info_data[img_id]['cam_K']).reshape(3, 3)
                     }
 
                     samples.append(sample)
@@ -203,7 +185,25 @@ class LineModPoseDataset(Dataset):
 
         # From (H, W, 3) to (3, H, W)
         crop_tensor = torch.from_numpy(cropped_img).permute(2, 0, 1).float()
-
+        
+        
+        # Calculate Center (in pixels)
+        cx = x + w / 2.0
+        cy = y + h / 2.0
+        
+        # Create Normalized Tensor [cx%, cy%, w%, h%] for TranslationNet
+        # We use the standard dimensions stored in self.input_standard_dimensions (640, 480)
+        std_w, std_h = self.input_standard_dimensions
+        
+        bbox_info = torch.tensor([
+            cx / float(std_w),
+            cy / float(std_h),
+            w  / float(std_w),
+            h  / float(std_h)
+        ], dtype=torch.float32)
+        
+        # Create Center Tensor [cx, cy] for Loss Calculation
+        bbox_center = torch.tensor([cx, cy], dtype=torch.float32)
         return {
             'image': crop_tensor,                                               # (3, 224, 224)
             'rotation': torch.from_numpy(sample['rotation']).float(),           # (4,) [w,x,y,z]
@@ -212,8 +212,8 @@ class LineModPoseDataset(Dataset):
             'class_idx': sample['class_idx'],                                   # int
             'cam_K': torch.from_numpy(sample['cam_K']).float(),                 # (3, 3)
             'img_id': sample['img_id'],                                          # int
-            'bbox_info': sample['bbox_info'],       # Input for the Network
-            'bbox_center': sample['bbox_center']    # Helper for the Loss function
+            'bbox_info': bbox_info,       # Input for the Network
+            'bbox_center': bbox_center    # Helper for the Loss function
         }
 
     def get_class_name(self, class_idx: int) -> str:
