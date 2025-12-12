@@ -15,7 +15,9 @@ class LineModPoseDataset(Dataset):
     Returns cropped object images and corresponding poses.
     """
 
-    VALID_OBJECTS = [1,2,4,5,6,8,9,10,11,12,13,14,15]
+    VALID_OBJECTS = [
+        1, 2, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15
+    ]  # object id 3, 7 not available
 
     CLASS_NAMES = [
         'ape', 'benchvise', 'camera', 'can', 'cat',
@@ -30,7 +32,8 @@ class LineModPoseDataset(Dataset):
         object_ids: Optional[List[int]] = None,
         image_size: Tuple[int, int] = (224, 224),
         transform = None,
-        normalize: bool = True
+        normalize: bool = True,
+        input_standard_dimensions: Optional[Tuple[int, int]] = (640, 480)
     ):
         """
         Args:
@@ -48,16 +51,16 @@ class LineModPoseDataset(Dataset):
         self.image_size = image_size
         self.transform = transform
         self.normalize = normalize
-
+        
         self.object_ids = object_ids if object_ids is not None else self.VALID_OBJECTS
 
         self.id_to_class = {obj_id: self.CLASS_NAMES[i] for i, obj_id in enumerate(self.VALID_OBJECTS)}
-
+        self.input_standard_dimensions = input_standard_dimensions
         self.samples = self._build_index()
 
-        print(f"📁 Loaded LineModPoseDataset")
+        print(f" Loaded LineModPoseDataset")
         print(f"   Split: {self.split}")
-        print(f"   Objects: {self.object_ids}")
+        print(f"   Dir : {self.object_ids}")
         print(f"   Total samples: {len(self.samples)}")
 
     def _build_index(self) -> List[Dict]:
@@ -88,6 +91,7 @@ class LineModPoseDataset(Dataset):
 
             # Load samples
             for img_id in img_ids:
+                img_id = int(img_id)
                 if img_id not in gt_data:
                     continue  # Skip if no GT data for this image
 
@@ -98,16 +102,40 @@ class LineModPoseDataset(Dataset):
 
                 annotations = gt_data[img_id]
                 for ann in annotations:
-                    if int(ann['obj_id']) != obj_id:
-                        continue  # Skip if not the current object
+                    
+                    actula_obj_id = int(ann['obj_id'])
 
                     rotation_matrix = np.array(ann['cam_R_m2c']).reshape(3, 3)
                     translation_vector = np.array(ann['cam_t_m2c'])
                     quaternion_rotation = convert_rotation_to_quaternion(rotation_matrix)
 
+                    x, y, w, h = map(int, ann['obj_bb'])
+                    bbox = [x, y, w, h]
+
+                    # If standard dimensions are provided, validate and clamp bbox now
+                    if self.input_standard_dimensions is not None:
+                        image_w, image_h = self.input_standard_dimensions
+
+                        # Skip invalid size
+                        if w <= 0 or h <= 0:
+                            continue
+                        
+                        x0, y0 = x, y
+                        x1, y1 = x + w, y + h
+                        
+                        # invalid bb 
+                        if x1 <= x0 or y1 <= y0:
+                            continue
+                        
+                        # Require bbox fully inside image bounds (inclusive on edges)
+                        if not (0 <= x0 and 0 <= y0 and x1 <= image_w and y1 <= image_h):
+                            continue
+
+                        
+
                     sample = {
-                        'object_id': obj_id,
-                        'class_idx': self.id_to_class[obj_id],
+                        'object_id': actula_obj_id,
+                        'class_idx': self.id_to_class[actula_obj_id],
                         'img_id': img_id,
                         'img_path': obj_path / 'rgb' / f"{img_id:04d}.png",
                         'rotation': quaternion_rotation,
@@ -118,25 +146,34 @@ class LineModPoseDataset(Dataset):
 
                     samples.append(sample)
 
-                    break  # Only one annotation per object per image
         return samples
-    
+
     def __len__(self) -> int:
         return len(self.samples)
-    
+
     def __getitem__(self, idx: int) -> Dict:
         sample = self.samples[idx]
 
         # Load image
         img = cv2.imread(str(sample['img_path']))
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        if img is None:  # Handle case where image file might be corrupted or missing
+            print(f"Warning: Could not load image from {sample['img_path']}. Returning black image.")
+            cropped_img = np.zeros((self.image_size[1], self.image_size[0], 3), dtype=np.uint8)
+        else:
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-        # Crop using bounding box
-        x, y, w, h = map(int, sample['bbox'])
-        cropped_img = img[y:y+h, x:x+w]
+            # Crop using validated bounding box (already checked in _build_index)
+            x, y, w, h = map(int, sample['bbox'])
+            cropped_img = img[y:y + h, x:x + w]
 
-        # Resize to desired size
-        cropped_img = cv2.resize(cropped_img, self.image_size)
+            # In rare cases if the crop is empty due to unexpected data, fallback to black
+            if cropped_img.size == 0:
+                print(f"Warning: Empty crop for image {sample['img_path']} with bbox {sample['bbox']}. Returning black image.")
+                cropped_img = np.zeros((self.image_size[1], self.image_size[0], 3), dtype=np.uint8)
+
+                
+            # Resize to desired size
+            cropped_img = cv2.resize(cropped_img, self.image_size)
 
         if self.normalize:
             # Standard ImageNet normalization
@@ -160,7 +197,7 @@ class LineModPoseDataset(Dataset):
             'cam_K': torch.from_numpy(sample['cam_K']).float(),                 # (3, 3)
             'img_id': sample['img_id']                                          # int
         }
-    
+
     def get_class_name(self, class_idx: int) -> str:
         """Get class name from class index"""
         return self.id_to_class.get(class_idx, "Unknown")
