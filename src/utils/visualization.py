@@ -1,1 +1,0 @@
-def draw_3d_box():

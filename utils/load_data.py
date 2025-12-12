@@ -1,5 +1,5 @@
 
-DATASET_PATH = '/content/drive/Linemod_preprocessed'
+
 
 def mount_drive():
     """
@@ -7,7 +7,7 @@ def mount_drive():
     """
     from google.colab import drive
     drive.mount('/content/drive')
-    print(f"\n✅ Drive mounted at {DATASET_PATH}")
+    print("✅ Drive mounted at /content/drive")
 
 
 def download_dataset():
