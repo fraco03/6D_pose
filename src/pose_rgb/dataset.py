@@ -137,7 +137,7 @@ class LineModPoseDataset(Dataset):
                         'img_id': img_id,
                         'img_path': obj_path / 'rgb' / f"{img_id:04d}.png",
                         'rotation': quaternion_rotation,
-                        'translation': translation_vector,
+                        'translation': translation_vector/1000.0,  # Convert mm to meters
                         'bbox': ann['obj_bb'],  # [x, y, w, h]
                         'cam_K': np.array(info_data[img_id]['cam_K']).reshape(3, 3)
                     }
