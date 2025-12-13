@@ -211,3 +211,5 @@ __marimo__/
 Linemod_preprocessed*/
 
 yolo11*/**
+
+__pycache__/
