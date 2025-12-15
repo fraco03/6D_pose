@@ -52,7 +52,7 @@ def quaternion_to_rotation_matrix(quaternion: np.ndarray) -> np.ndarray:
     ])
     return R
     
-def backproject_pixel_to_3d(
+def inverse_pinhole_projection(
     crop_center: torch.Tensor, 
     deltas: torch.Tensor, 
     z: torch.Tensor, 
