@@ -1,12 +1,12 @@
 
 
 
-def mount_drive():
+def mount_drive(path='/content/drive'):
     """
     Mounts drive for colab
     """
     from google.colab import drive
-    drive.mount('/content/drive')
+    drive.mount(path)
     print("✅ Drive mounted at /content/drive")
 
 

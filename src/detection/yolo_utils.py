@@ -475,7 +475,7 @@ def generate_synthetic_dataset(source_root, dest_root, bg_cache_dir, num_collage
     print(f"   [VALIDATION] Real images (all classes):       {stats['val']}")
 
     # Create YAML configuration
-    with open('/content/linemod.yaml', 'w') as f:
+    with open('./linemod.yaml', 'w') as f:
         f.write(f"path: {dest_root}\ntrain: images/train\nval: images/val\nnc: {len(class_names)}\nnames: {class_names}")
         
 
