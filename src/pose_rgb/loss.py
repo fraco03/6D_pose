@@ -11,6 +11,8 @@ class RotationLoss(nn.Module):
         gt_q = torch.nn.functional.normalize(gt_q, p=2, dim=1)
         
         dot_product = torch.sum(pred_q * gt_q, dim=1)
+        # Clamp per evitare errori numerici che portano a loss negativa
+        dot_product = torch.clamp(dot_product, -1.0, 1.0)
         loss = 1.0 - torch.abs(dot_product)
         return loss.mean()
 
