@@ -2,117 +2,86 @@ import torch
 import torch.nn as nn
 
 class RotationLoss(nn.Module):
-    """
-    Loss function specialized for Quaternion Regression.
-    
-    It calculates the Geodesic distance (angular difference) between 
-    the predicted quaternion and the ground truth quaternion.
-    
-    Mathematical formulation:
-    L = 1 - |<q_pred, q_gt>|
-    
-    We take the absolute value of the dot product to handle the 
-    'double cover' property of quaternions (q and -q represent the same rotation).
-    """
     def __init__(self):
         super(RotationLoss, self).__init__()
 
     def forward(self, pred_q, gt_q):
-        """
-        Args:
-            pred_q (torch.Tensor): Predicted quaternions. Shape (Batch, 4).
-                                   Expects normalized quaternions (unit length).
-            gt_q (torch.Tensor): Ground Truth quaternions. Shape (Batch, 4).
+        # Normalizzazione di sicurezza (fondamentale)
+        pred_q = torch.nn.functional.normalize(pred_q, p=2, dim=1)
+        gt_q = torch.nn.functional.normalize(gt_q, p=2, dim=1)
         
-        Returns:
-            torch.Tensor: Scalar loss value (mean over batch).
-        """
-        # 1. Calculate Dot Product
-        # q1 . q2 = w1*w2 + x1*x2 + y1*y2 + z1*z2
         dot_product = torch.sum(pred_q * gt_q, dim=1)
-        
-        # 2. Calculate angular error
-        # We assume quaternions are unit length.
-        # Ideally, dot product is 1.0 (or -1.0) if rotations are identical.
-        # Loss becomes 0 when rotations are identical.
         loss = 1.0 - torch.abs(dot_product)
-        
-        # 3. Average over the batch
         return loss.mean()
-    
-class TranslationLoss(nn.Module):
+
+class DisentangledTranslationLoss(nn.Module):
     """
-    Loss function specialized for 3D Translation Regression.
-    
-    It predicts a vector of 3 values: [delta_x, delta_y, z].
-    Uses Smooth L1 Loss (Huber Loss) to be robust against outliers 
-    in pixel offsets or depth estimation.
+    Separa XY (pixel/schermo) da Z (profondità metrica).
     """
-    def __init__(self, beta=1.0):
-        """
-        Args:
-            beta (float): Threshold for SmoothL1. 
-                          If error < beta, it uses squared loss (L2).
-                          If error >= beta, it uses linear loss (L1).
-        """
-        super(TranslationLoss, self).__init__()
-        self.loss_fn = nn.SmoothL1Loss(reduction='mean', beta=beta)
+    def __init__(self, use_log_z=True):
+        super(DisentangledTranslationLoss, self).__init__()
+        self.use_log_z = use_log_z
+        self.l1 = nn.SmoothL1Loss(reduction='mean')
 
     def forward(self, pred_trans, gt_trans):
-        """
-        Args:
-            pred_trans (torch.Tensor): Predicted vector [dx, dy, z]. Shape (Batch, 3).
-            gt_trans (torch.Tensor): Target vector [dx, dy, z]. Shape (Batch, 3).
-                                     (Must be calculated from GT absolute translation).
+        # pred_trans: [dx, dy, z]
         
-        Returns:
-            torch.Tensor: Scalar loss value.
-        """
-        # Simply compute the regression error
-        loss = self.loss_fn(pred_trans, gt_trans)
+        # 1. Loss sui pixel (dx, dy)
+        loss_xy = self.l1(pred_trans[:, :2], gt_trans[:, :2])
         
-        return loss
-    
-class CombinedPoseLoss(nn.Module):
+        # 2. Loss sulla profondità (Z)
+        pred_z = pred_trans[:, 2]
+        gt_z = gt_trans[:, 2]
+        
+        if self.use_log_z:
+            # Log loss è meglio per la profondità perché penalizza
+            # gli errori relativi (sbagliare di 10cm su 1m è grave, su 10m no)
+            # Aggiungiamo epsilon per sicurezza
+            loss_z = self.l1(torch.log(torch.abs(pred_z) + 1e-6), 
+                             torch.log(torch.abs(gt_z) + 1e-6))
+        else:
+            loss_z = self.l1(pred_z, gt_z)
+            
+        return loss_xy, loss_z
+
+class AutomaticWeightedLoss(nn.Module):
     """
-    Unified Loss function that combines Rotation and Translation errors.
+    Bilanciamento automatico delle Loss (Kendall et al. CVPR 2018).
+    Invece di cercare w_rot e w_trans a mano, la rete impara 'sx', 'sy', 'sz'.
     
-    It computes the weighted sum:
-    Total_Loss = (w_rot * Rot_Loss) + (w_trans * Trans_Loss)
+    Loss = (Loss_A / (2 * sigma_A^2)) + log(sigma_A)
     """
-    def __init__(self, w_rot=1.0, w_trans=1.0):
-        """
-        Args:
-            w_rot (float): Weight coefficient for rotation loss.
-            w_trans (float): Weight coefficient for translation loss.
-        """
-        super(CombinedPoseLoss, self).__init__()
-        self.w_rot = w_rot
-        self.w_trans = w_trans
+    def __init__(self):
+        super(AutomaticWeightedLoss, self).__init__()
         
-        # Instantiate the specific sub-losses
-        self.rot_criterion = RotationLoss()
-        self.trans_criterion = TranslationLoss()
+        # Parametri apprendibili (inizializzati a 0 -> sigma=1)
+        # sx: varianza per la rotazione
+        # sy: varianza per offset XY
+        # sz: varianza per profondità Z
+        self.sx = nn.Parameter(torch.tensor(0.0)) 
+        self.sy = nn.Parameter(torch.tensor(0.0))
+        self.sz = nn.Parameter(torch.tensor(0.0))
+        
+        self.rot_loss_fn = RotationLoss()
+        self.trans_loss_fn = DisentangledTranslationLoss(use_log_z=True)
 
     def forward(self, pred_rot, gt_rot, pred_trans, gt_trans):
-        """
-        Calculates the combined loss.
+        # 1. Calcola le loss grezze
+        l_rot = self.rot_loss_fn(pred_rot, gt_rot)
+        l_xy, l_z = self.trans_loss_fn(pred_trans, gt_trans)
         
-        Args:
-            pred_rot, gt_rot: Quaternions for rotation.
-            pred_trans, gt_trans: Vectors [dx, dy, z] for translation.
-            
-        Returns:
-            total_loss: The weighted sum (used for backprop).
-            l_rot: The raw rotation loss (for logging/monitoring).
-            l_trans: The raw translation loss (for logging/monitoring).
-        """
-        # 1. Calculate individual losses
-        l_rot = self.rot_criterion(pred_rot, gt_rot)
-        l_trans = self.trans_criterion(pred_trans, gt_trans)
+        # 2. Pesatura Automatica (Multi-Task Loss)
+        # Nota: usiamo exp(-s) invece di dividere per s^2 per stabilità numerica
         
-        # 2. Weighted Sum
-        total_loss = (self.w_rot * l_rot) + (self.w_trans * l_trans)
+        # Rotazione
+        loss_rot_weighted = l_rot * torch.exp(-self.sx) + self.sx
         
-        # We return all three so you can print them separately in the progress bar
-        return total_loss, l_rot, l_trans
+        # Traslazione XY
+        loss_xy_weighted = l_xy * torch.exp(-self.sy) + self.sy
+        
+        # Traslazione Z
+        loss_z_weighted = l_z * torch.exp(-self.sz) + self.sz
+        
+        total_loss = loss_rot_weighted + loss_xy_weighted + loss_z_weighted
+        
+        return total_loss, l_rot, l_xy, l_z
