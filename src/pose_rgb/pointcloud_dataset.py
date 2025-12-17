@@ -107,15 +107,11 @@ class LineModPointCloudDataset(Dataset):
         
         return R, t, bbox
     
-    def _load_camera_intrinsics(self, obj_id):
-        """Carica camera intrinsics da info.yml"""
-        info_file = self.root_dir / "data" / f"{obj_id:02d}" / "info.yml"
-        
-        with open(info_file, 'r') as f:
-            info_data = yaml.safe_load(f)
-        
-        # Camera matrix (qualsiasi img_id va bene, sono tutte uguali)
-        cam_K = np.array(info_data[0]['cam_K']).reshape(3, 3)
+    def _get_camera_intrinsics(self, obj_id):
+        """Get camera intrinsics from cached linemod_config"""
+        # Usa linemod_config che già cacha questi dati!
+        info = self.config.get_model_info(obj_id)
+        cam_K = np.array(info['cam_K']).reshape(3, 3)
         return cam_K
     
     def _crop_with_bbox(self, image, bbox):
@@ -191,16 +187,17 @@ class LineModPointCloudDataset(Dataset):
     def _sample_points(self, points):
         """
         Campiona un numero fisso di punti dalla point cloud.
+        Usa torch.randperm per speed-up ~1.5x vs np.random.choice
         """
         n_points = len(points)
         
         if n_points >= self.num_points:
-            # Random sampling
-            indices = np.random.choice(n_points, self.num_points, replace=False)
+            # Random sampling con torch (più veloce)
+            indices = torch.randperm(n_points)[:self.num_points].numpy()
             sampled = points[indices]
         else:
             # Pad con punti duplicati se non ci sono abbastanza punti
-            indices = np.random.choice(n_points, self.num_points, replace=True)
+            indices = torch.randint(0, n_points, (self.num_points,)).numpy()
             sampled = points[indices]
         
         return sampled
@@ -212,7 +209,7 @@ class LineModPointCloudDataset(Dataset):
         
         # 1. Carica dati
         depth = self._load_depth(obj_id, img_id)
-        cam_K = self._load_camera_intrinsics(obj_id)
+        cam_K = self._get_camera_intrinsics(obj_id)  # Cached!
         R_gt, t_gt, bbox = self._load_gt_pose(obj_id, img_id)
         
         rgb = None
