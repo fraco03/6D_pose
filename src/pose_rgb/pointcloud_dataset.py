@@ -35,19 +35,23 @@ class LineModPointCloudDataset(Dataset):
         self.config = get_linemod_config(root_dir)
         
         # Carica lista di samples
+        # Load list of samples
         self.samples = self._load_samples()
+        
+        # Preload YAML data in cache for speed-up
+        self._preload_data()
         
         print(f"📊 Loaded {len(self.samples)} samples for {split} split")
     
     def _load_samples(self):
-        """Carica la lista di tutti i sample dal dataset"""
+        """Load the list of all samples from the dataset"""
         samples = []
         
-        # Itera su tutti gli oggetti (01-15)
+        # Iterate over all objects (01-15)
         for obj_id in range(1, 16):
             obj_dir = self.root_dir / "data" / f"{obj_id:02d}"
             
-            # Leggi il file split corrispondente
+            # Read the corresponding split file
             split_file = obj_dir / f"{self.split}.txt"
             if not split_file.exists():
                 continue
@@ -55,7 +59,7 @@ class LineModPointCloudDataset(Dataset):
             with open(split_file, 'r') as f:
                 img_ids = [int(line.strip()) for line in f.readlines()]
             
-            # Aggiungi samples
+            # Add samples
             for img_id in img_ids:
                 samples.append({
                     'object_id': obj_id,
@@ -64,41 +68,58 @@ class LineModPointCloudDataset(Dataset):
         
         return samples
     
+    def _preload_data(self):
+        """Preload all gt.yml and info.yml in cache"""
+        print("🔄 Preloading YAML files...")
+        
+        # Find all unique objects in the dataset
+        unique_objects = set(s['object_id'] for s in self.samples)
+        
+        for obj_id in unique_objects:
+            # Get any img_id for this object (to trigger caching)
+            img_id = next(s['img_id'] for s in self.samples if s['object_id'] == obj_id)
+            
+            # Trigger caching of gt.yml and info.yml
+            _ = self.config.get_gt_pose(obj_id, img_id)
+            _ = self.config.get_camera_intrinsics(obj_id, img_id)
+        
+        print(f"✅ Preloaded YAML data for {len(unique_objects)} objects")
+    
     def __len__(self):
         return len(self.samples)
     
     def _load_depth(self, obj_id, img_id):
-        """Carica depth image in mm"""
+        """Load depth image in mm"""
         depth_path = self.root_dir / "data" / f"{obj_id:02d}" / "depth" / f"{img_id:04d}.png"
         depth = cv2.imread(str(depth_path), cv2.IMREAD_UNCHANGED)  # 16-bit
         return depth.astype(np.float32)
     
     def _load_rgb(self, obj_id, img_id):
-        """Carica RGB image"""
+        """Load RGB image"""
         rgb_path = self.root_dir / "data" / f"{obj_id:02d}" / "rgb" / f"{img_id:04d}.png"
         rgb = cv2.imread(str(rgb_path))
         rgb = cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB)
         return rgb
     
     def _load_mask(self, obj_id, img_id):
-        """Carica object mask"""
+        """Load object mask"""
         mask_path = self.root_dir / "data" / f"{obj_id:02d}" / "mask" / f"{img_id:04d}.png"
         mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
         return mask > 0
     
     def _load_gt_pose(self, obj_id, img_id):
-        """Carica ground truth pose da cached linemod_config"""
-        # Usa linemod_config che cacha automaticamente gt.yml
+        """Load ground truth pose from cached linemod_config"""
+        # Use linemod_config which automatically caches gt.yml
         return self.config.get_gt_pose(obj_id, img_id)
     
     def _get_camera_intrinsics(self, obj_id, img_id):
         """Get camera intrinsics from cached linemod_config"""
-        # Usa linemod_config che cacha automaticamente info.yml
+        # Use linemod_config which automatically caches info.yml
         return self.config.get_camera_intrinsics(obj_id, img_id)
     
     def _crop_with_bbox(self, image, bbox):
         """
-        Croppa un'immagine usando bbox [x, y, w, h].
+        Crop an image using bbox [x, y, w, h].
         
         Args:
             image: (H, W) o (H, W, C) immagine
@@ -110,7 +131,7 @@ class LineModPointCloudDataset(Dataset):
         x, y, w, h = bbox
         x, y, w, h = int(x), int(y), int(w), int(h)
         
-        # Assicurati che la bbox sia dentro l'immagine
+        # Ensure bbox is within image bounds
         H, W = image.shape[:2]
         x1 = max(0, x)
         y1 = max(0, y)
@@ -121,7 +142,7 @@ class LineModPointCloudDataset(Dataset):
     
     def _depth_to_point_cloud(self, depth, cam_K, mask=None, rgb=None):
         """
-        Converte depth image in point cloud.
+        Convert depth image to point cloud.
         
         Args:
             depth: (H, W) depth in mm
@@ -139,7 +160,7 @@ class LineModPointCloudDataset(Dataset):
         # Mesh grid
         u, v = np.meshgrid(np.arange(W), np.arange(H))
         
-        # Maschera punti validi
+        # Mask valid points
         valid_mask = depth > 0
         if mask is not None:
             valid_mask = valid_mask & mask
@@ -153,10 +174,10 @@ class LineModPointCloudDataset(Dataset):
         y = (v_valid - cy) * z_valid / fy
         z = z_valid
         
-        # Converti in metri
+        # Convert to meters
         points_xyz = np.stack([x/1000.0, y/1000.0, z/1000.0], axis=1)
         
-        # Aggiungi RGB se disponibile
+        # Add RGB if available
         if rgb is not None and self.use_rgb:
             rgb_valid = rgb[valid_mask]
             rgb_normalized = rgb_valid.astype(np.float32) / 255.0
@@ -168,17 +189,17 @@ class LineModPointCloudDataset(Dataset):
     
     def _sample_points(self, points):
         """
-        Campiona un numero fisso di punti dalla point cloud.
-        Usa torch.randperm per speed-up ~1.5x vs np.random.choice
+        Sample a fixed number of points from point cloud.
+        Use torch.randperm for ~1.5x speed-up vs np.random.choice
         """
         n_points = len(points)
         
         if n_points >= self.num_points:
-            # Random sampling con torch (più veloce)
+            # Random sampling with torch (faster)
             indices = torch.randperm(n_points)[:self.num_points].numpy()
             sampled = points[indices]
         else:
-            # Pad con punti duplicati se non ci sono abbastanza punti
+            # Pad with duplicate points if not enough points
             indices = torch.randint(0, n_points, (self.num_points,)).numpy()
             sampled = points[indices]
         
@@ -189,7 +210,7 @@ class LineModPointCloudDataset(Dataset):
         obj_id = sample_info['object_id']
         img_id = sample_info['img_id']
         
-        # 1. Carica dati
+        # 1. Load data
         depth = self._load_depth(obj_id, img_id)
         cam_K = self._get_camera_intrinsics(obj_id, img_id)  # Cached!
         R_gt, t_gt, bbox = self._load_gt_pose(obj_id, img_id)
@@ -198,24 +219,24 @@ class LineModPointCloudDataset(Dataset):
         if self.use_rgb:
             rgb = self._load_rgb(obj_id, img_id)
         
-        # 2. Croppa depth e RGB usando bbox
+        # 2. Crop depth and RGB using bbox
         depth_crop = self._crop_with_bbox(depth, bbox)
         rgb_crop = self._crop_with_bbox(rgb, bbox) if rgb is not None else None
         
-        # 3. Point cloud in coordinate LOCALI (relative al crop)
-        # Aggiusta cam_K per il crop
+        # 3. Point cloud in LOCAL coordinates (relative to crop)
+        # Adjust cam_K for crop
         x_bbox, y_bbox, w_bbox, h_bbox = bbox
         cam_K_crop = cam_K.copy()
-        cam_K_crop[0, 2] = cam_K[0, 2] - x_bbox  # cx aggiustato
-        cam_K_crop[1, 2] = cam_K[1, 2] - y_bbox  # cy aggiustato
+        cam_K_crop[0, 2] = cam_K[0, 2] - x_bbox  # adjusted cx
+        cam_K_crop[1, 2] = cam_K[1, 2] - y_bbox  # adjusted cy
         
-        # 4. Genera point cloud LOCALE
+        # 4. Generate LOCAL point cloud
         points = self._depth_to_point_cloud(depth_crop, cam_K_crop, mask=None, rgb=rgb_crop)
         
-        # 5. Campiona numero fisso di punti
+        # 5. Sample fixed number of points
         points = self._sample_points(points)
         
-        # 6. Bbox info normalizzato (come nel dataset RGB)
+        # 6. Normalized bbox info (like in RGB dataset)
         H, W = depth.shape
         cx = x_bbox + w_bbox / 2.0
         cy = y_bbox + h_bbox / 2.0
@@ -226,7 +247,7 @@ class LineModPointCloudDataset(Dataset):
             h_bbox / float(H)
         ], dtype=np.float32)
         
-        # 7. Converti rotation matrix in quaternion
+        # 7. Convert rotation matrix to quaternion
         from src.pose_rgb.pose_utils import convert_rotation_to_quaternion
         quat_gt = convert_rotation_to_quaternion(torch.from_numpy(R_gt).float())
         
