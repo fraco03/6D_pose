@@ -262,7 +262,7 @@ class LineModPointCloudDataset(Dataset):
         return {
             'point_cloud': torch.from_numpy(points).float(),  # (num_points, 3 o 6) LOCALE
             'bbox_info': torch.from_numpy(bbox_info).float(),  # (4,) [cx%, cy%, w%, h%]
-            'rotation': quat_gt,  # (4,) quaternion GLOBALE - ONLY PREDICTION TARGET
+            'rotation': torch.from_numpy(quat_gt),  # (4,) quaternion GLOBALE - ONLY PREDICTION TARGET
             'object_id': obj_id,
             'img_id': img_id,
             'cam_K': torch.from_numpy(cam_K).float(),
