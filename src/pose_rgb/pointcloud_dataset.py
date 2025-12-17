@@ -87,25 +87,9 @@ class LineModPointCloudDataset(Dataset):
         return mask > 0
     
     def _load_gt_pose(self, obj_id, img_id):
-        """Carica ground truth pose da gt.yml"""
-        gt_file = self.root_dir / "data" / f"{obj_id:02d}" / "gt.yml"
-        
-        with open(gt_file, 'r') as f:
-            gt_data = yaml.safe_load(f)
-        
-        # Trova la posa per questa immagine
-        pose_data = gt_data[img_id][0]  # Primo oggetto (assumiamo 1 oggetto per immagine)
-        
-        # Rotation matrix (3x3)
-        R = np.array(pose_data['cam_R_m2c']).reshape(3, 3)
-        
-        # Translation vector (mm -> metri)
-        t = np.array(pose_data['cam_t_m2c']) / 1000.0
-        
-        # Bbox [x, y, w, h]
-        bbox = np.array(pose_data['obj_bb'])
-        
-        return R, t, bbox
+        """Carica ground truth pose da cached linemod_config"""
+        # Usa linemod_config che cacha automaticamente gt.yml
+        return self.config.get_gt_pose(obj_id, img_id)
     
     def _get_camera_intrinsics(self, obj_id, img_id):
         """Get camera intrinsics from cached linemod_config"""

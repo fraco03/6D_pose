@@ -53,6 +53,9 @@ class LineModConfig:
         # Cache info.yml per object (on-demand) - contiene cam_K per ogni img_id
         self._info_cache: Dict[int, dict] = {}
         
+        # Cache gt.yml per object (on-demand) - contiene pose GT per ogni img_id
+        self._gt_cache: Dict[int, dict] = {}
+        
         self._initialized = True
         print(f"✅ LineModConfig initialized: {self.dataset_root}")
     
@@ -181,6 +184,42 @@ class LineModConfig:
         # Get cam_K for this img_id
         cam_K = np.array(self._info_cache[object_id][img_id]['cam_K']).reshape(3, 3)
         return cam_K
+    
+    def get_gt_pose(self, object_id: int, img_id: int):
+        """
+        Get ground truth pose for specific object and image.
+        
+        Args:
+            object_id: Object ID (1-15)
+            img_id: Image ID
+        
+        Returns:
+            R: (3, 3) rotation matrix
+            t: (3,) translation vector in meters
+            bbox: (4,) bounding box [x, y, w, h]
+        """
+        # Load gt.yml for this object if not cached
+        if object_id not in self._gt_cache:
+            gt_file = self.data_dir / f"{object_id:02d}" / "gt.yml"
+            if not gt_file.exists():
+                raise FileNotFoundError(f"gt.yml not found: {gt_file}")
+            
+            with open(gt_file, 'r') as f:
+                self._gt_cache[object_id] = yaml.safe_load(f)
+        
+        # Get pose for this img_id
+        pose_data = self._gt_cache[object_id][img_id][0]  # First object
+        
+        # Rotation matrix (3x3)
+        R = np.array(pose_data['cam_R_m2c']).reshape(3, 3)
+        
+        # Translation vector (mm -> meters)
+        t = np.array(pose_data['cam_t_m2c']) / 1000.0
+        
+        # Bbox [x, y, w, h]
+        bbox = np.array(pose_data['obj_bb'])
+        
+        return R, t, bbox
     
     def print_info(self):
         """Print dataset information"""
