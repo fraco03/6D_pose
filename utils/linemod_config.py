@@ -50,6 +50,9 @@ class LineModConfig:
         # Cache 3d models (on-demand)
         self._models_3d_cache: Dict[int, np.ndarray] = {}
         
+        # Cache info.yml per object (on-demand) - contiene cam_K per ogni img_id
+        self._info_cache: Dict[int, dict] = {}
+        
         self._initialized = True
         print(f"✅ LineModConfig initialized: {self.dataset_root}")
     
@@ -154,6 +157,30 @@ class LineModConfig:
     def get_model_info(self, object_id: int) -> dict:
         """Get model info from models_info.yml"""
         return self.models_info[object_id]
+    
+    def get_camera_intrinsics(self, object_id: int, img_id: int) -> np.ndarray:
+        """
+        Get camera intrinsics matrix for specific object and image.
+        
+        Args:
+            object_id: Object ID (1-15)
+            img_id: Image ID
+        
+        Returns:
+            cam_K: (3, 3) camera intrinsics matrix
+        """
+        # Load info.yml for this object if not cached
+        if object_id not in self._info_cache:
+            info_file = self.data_dir / f"{object_id:02d}" / "info.yml"
+            if not info_file.exists():
+                raise FileNotFoundError(f"info.yml not found: {info_file}")
+            
+            with open(info_file, 'r') as f:
+                self._info_cache[object_id] = yaml.safe_load(f)
+        
+        # Get cam_K for this img_id
+        cam_K = np.array(self._info_cache[object_id][img_id]['cam_K']).reshape(3, 3)
+        return cam_K
     
     def print_info(self):
         """Print dataset information"""

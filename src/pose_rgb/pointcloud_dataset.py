@@ -107,12 +107,10 @@ class LineModPointCloudDataset(Dataset):
         
         return R, t, bbox
     
-    def _get_camera_intrinsics(self, obj_id):
+    def _get_camera_intrinsics(self, obj_id, img_id):
         """Get camera intrinsics from cached linemod_config"""
-        # Usa linemod_config che già cacha questi dati!
-        info = self.config.get_model_info(obj_id)
-        cam_K = np.array(info['cam_K']).reshape(3, 3)
-        return cam_K
+        # Usa linemod_config che cacha automaticamente info.yml
+        return self.config.get_camera_intrinsics(obj_id, img_id)
     
     def _crop_with_bbox(self, image, bbox):
         """
@@ -209,7 +207,7 @@ class LineModPointCloudDataset(Dataset):
         
         # 1. Carica dati
         depth = self._load_depth(obj_id, img_id)
-        cam_K = self._get_camera_intrinsics(obj_id)  # Cached!
+        cam_K = self._get_camera_intrinsics(obj_id, img_id)  # Cached!
         R_gt, t_gt, bbox = self._load_gt_pose(obj_id, img_id)
         
         rgb = None
