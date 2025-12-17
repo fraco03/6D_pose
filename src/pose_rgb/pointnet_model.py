@@ -65,7 +65,9 @@ class PointNetPose(nn.Module):
     """
     PointNet per 6D Pose Estimation.
     
-    Predice sia rotation (quaternion) che translation (XYZ) da una point cloud.
+    Predice rotation (quaternion) e translation GLOBALI da:
+    - Point cloud LOCALE (coordinate relative al crop)
+    - Bbox info (posizione percentuale del crop nell'immagine)
     """
     def __init__(self, input_channels=3, use_batch_norm=True):
         """
@@ -78,9 +80,19 @@ class PointNetPose(nn.Module):
         # Backbone PointNet
         self.backbone = PointNetBackbone(input_channels, use_batch_norm)
         
+        # Bbox info processor (4 valori: cx%, cy%, w%, h%)
+        self.bbox_processor = nn.Sequential(
+            nn.Linear(4, 64),
+            nn.ReLU(),
+            nn.Linear(64, 128)
+        )
+        
+        # Feature fusion: 1024 (pointnet) + 128 (bbox) = 1152
+        fusion_dim = 1024 + 128
+        
         # Rotation Head (predice quaternion)
         self.rotation_head = nn.Sequential(
-            nn.Linear(1024, 512),
+            nn.Linear(fusion_dim, 512),
             nn.ReLU(),
             nn.Dropout(0.3),
             nn.Linear(512, 256),
@@ -89,54 +101,54 @@ class PointNetPose(nn.Module):
             nn.Linear(256, 4)  # Quaternion [w, x, y, z]
         )
         
-        # Translation Head (predice [X, Y, Z])
+        # Translation Head (predice [X, Y, Z] GLOBALE)
         self.translation_head = nn.Sequential(
-            nn.Linear(1024, 512),
+            nn.Linear(fusion_dim, 512),
             nn.ReLU(),
             nn.Dropout(0.3),
             nn.Linear(512, 256),
             nn.ReLU(),
             nn.Dropout(0.2),
-            nn.Linear(256, 3)  # [tx, ty, tz]
+            nn.Linear(256, 3)  # [tx, ty, tz] GLOBALE in metri
         )
         
         self._init_weights()
     
     def _init_weights(self):
         """Inizializza i pesi delle teste"""
-        for m in self.rotation_head.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.xavier_normal_(m.weight)
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
-        
-        for m in self.translation_head.modules():
+        for m in self.modules():
             if isinstance(m, nn.Linear):
                 nn.init.xavier_normal_(m.weight)
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
     
-    def forward(self, point_cloud):
+    def forward(self, point_cloud, bbox_info):
         """
         Forward pass.
         
         Args:
-            point_cloud: (B, N, C) point cloud
-                         C=3 per [x,y,z] oppure C=6 per [x,y,z,r,g,b]
+            point_cloud: (B, N, C) point cloud LOCALE
+            bbox_info: (B, 4) bbox normalizzato [cx%, cy%, w%, h%]
         
         Returns:
-            rotation: (B, 4) quaternion normalizzato
-            translation: (B, 3) translation [x, y, z] in metri
+            rotation: (B, 4) quaternion normalizzato GLOBALE
+            translation: (B, 3) translation GLOBALE [x, y, z] in metri
         """
-        # 1. Estrai feature globali
-        global_feat = self.backbone(point_cloud)
+        # 1. Estrai feature globali dalla point cloud
+        point_feat = self.backbone(point_cloud)
         
-        # 2. Predici rotation
-        rotation = self.rotation_head(global_feat)
+        # 2. Processa bbox info
+        bbox_feat = self.bbox_processor(bbox_info)
+        
+        # 3. Fuse features
+        fused_feat = torch.cat([point_feat, bbox_feat], dim=1)
+        
+        # 4. Predici rotation
+        rotation = self.rotation_head(fused_feat)
         rotation = F.normalize(rotation, p=2, dim=1)  # Normalizza quaternion
         
-        # 3. Predici translation
-        translation = self.translation_head(global_feat)
+        # 5. Predici translation GLOBALE
+        translation = self.translation_head(fused_feat)
         
         return rotation, translation
 

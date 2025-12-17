@@ -198,24 +198,43 @@ class LineModPointCloudDataset(Dataset):
         if self.use_rgb:
             rgb = self._load_rgb(obj_id, img_id)
         
-        # 2. Croppa depth e RGB usando bbox (invece di mask)
+        # 2. Croppa depth e RGB usando bbox
         depth_crop = self._crop_with_bbox(depth, bbox)
         rgb_crop = self._crop_with_bbox(rgb, bbox) if rgb is not None else None
         
-        # 3. Genera point cloud dalla regione croppata
-        points = self._depth_to_point_cloud(depth_crop, cam_K, mask=None, rgb=rgb_crop)
+        # 3. Point cloud in coordinate LOCALI (relative al crop)
+        # Aggiusta cam_K per il crop
+        x_bbox, y_bbox, w_bbox, h_bbox = bbox
+        cam_K_crop = cam_K.copy()
+        cam_K_crop[0, 2] = cam_K[0, 2] - x_bbox  # cx aggiustato
+        cam_K_crop[1, 2] = cam_K[1, 2] - y_bbox  # cy aggiustato
         
-        # 4. Campiona numero fisso di punti
+        # 4. Genera point cloud LOCALE
+        points = self._depth_to_point_cloud(depth_crop, cam_K_crop, mask=None, rgb=rgb_crop)
+        
+        # 5. Campiona numero fisso di punti
         points = self._sample_points(points)
         
-        # 5. Converti rotation matrix in quaternion
+        # 6. Bbox info normalizzato (come nel dataset RGB)
+        H, W = depth.shape
+        cx = x_bbox + w_bbox / 2.0
+        cy = y_bbox + h_bbox / 2.0
+        bbox_info = np.array([
+            cx / float(W),
+            cy / float(H),
+            w_bbox / float(W),
+            h_bbox / float(H)
+        ], dtype=np.float32)
+        
+        # 7. Converti rotation matrix in quaternion
         from src.pose_rgb.pose_utils import convert_rotation_to_quaternion
         quat_gt = convert_rotation_to_quaternion(torch.from_numpy(R_gt).float())
         
         return {
-            'point_cloud': torch.from_numpy(points).float(),  # (num_points, 3 o 6)
-            'rotation': quat_gt,  # (4,) quaternion
-            'translation': torch.from_numpy(t_gt).float(),  # (3,) in metri
+            'point_cloud': torch.from_numpy(points).float(),  # (num_points, 3 o 6) LOCALE
+            'bbox_info': torch.from_numpy(bbox_info).float(),  # (4,) [cx%, cy%, w%, h%]
+            'rotation': quat_gt,  # (4,) quaternion GLOBALE
+            'translation': torch.from_numpy(t_gt).float(),  # (3,) in metri GLOBALE
             'object_id': obj_id,
             'img_id': img_id,
             'cam_K': torch.from_numpy(cam_K).float(),
