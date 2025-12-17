@@ -16,24 +16,24 @@ class PointNetBackbone(nn.Module):
     def __init__(self, input_channels=3, use_batch_norm=True):
         super(PointNetBackbone, self).__init__()
         
-        # Shared MLPs (implementate come Conv1d per efficienza)
-        # Ogni punto viene processato indipendentemente
-        self.conv1 = nn.Conv1d(input_channels, 64, 1)
-        self.conv2 = nn.Conv1d(64, 128, 1)
-        self.conv3 = nn.Conv1d(128, 1024, 1)
+        # Shared MLPs (implemented as Conv1d for efficiency)
+        # Lightweight architecture for fast training on T4
+        self.conv1 = nn.Conv1d(input_channels, 32, 1)
+        self.conv2 = nn.Conv1d(32, 64, 1)
+        self.conv3 = nn.Conv1d(64, 256, 1)  # Reduced from 1024
         
         self.use_batch_norm = use_batch_norm
         if use_batch_norm:
-            self.bn1 = nn.BatchNorm1d(64)
-            self.bn2 = nn.BatchNorm1d(128)
-            self.bn3 = nn.BatchNorm1d(1024)
+            self.bn1 = nn.BatchNorm1d(32)
+            self.bn2 = nn.BatchNorm1d(64)
+            self.bn3 = nn.BatchNorm1d(256)
     
     def forward(self, x):
         """
         Args:
-            x: (B, N, C) point cloud dove C = 3 o 6
+            x: (B, N, C) point cloud where C = 3 or 6
         Returns:
-            global_feat: (B, 1024) feature globali
+            global_feat: (B, 256) global features
         """
         # PointNet lavora su (B, C, N) quindi traspongiamo
         x = x.transpose(2, 1)  # (B, N, C) -> (B, C, N)
@@ -54,8 +54,8 @@ class PointNetBackbone(nn.Module):
             x = self.bn3(x)
         x = F.relu(x)
         
-        # Max pooling globale: (B, 1024, N) -> (B, 1024)
-        # Questa è la chiave di PointNet: permutazione invariante
+        # Global max pooling: (B, 256, N) -> (B, 256)
+        # This is PointNet's key property: permutation invariance
         global_feat = torch.max(x, 2)[0]
         
         return global_feat
@@ -80,36 +80,32 @@ class PointNetPose(nn.Module):
         # Backbone PointNet
         self.backbone = PointNetBackbone(input_channels, use_batch_norm)
         
-        # Bbox info processor (4 valori: cx%, cy%, w%, h%)
+        # Bbox info processor (4 values: cx%, cy%, w%, h%)
         self.bbox_processor = nn.Sequential(
-            nn.Linear(4, 64),
+            nn.Linear(4, 32),
             nn.ReLU(),
-            nn.Linear(64, 128)
+            nn.Linear(32, 64)
         )
         
-        # Feature fusion: 1024 (pointnet) + 128 (bbox) = 1152
-        fusion_dim = 1024 + 128
+        # Feature fusion: 256 (pointnet) + 64 (bbox) = 320
+        fusion_dim = 256 + 64
         
-        # Rotation Head (predice quaternion)
+        # Rotation Head (predict quaternion)
         self.rotation_head = nn.Sequential(
-            nn.Linear(fusion_dim, 512),
+            nn.Linear(fusion_dim, 128),
             nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(512, 256),
+            nn.Linear(128, 64),
             nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(256, 4)  # Quaternion [w, x, y, z]
+            nn.Linear(64, 4)  # Quaternion [w, x, y, z]
         )
         
-        # Translation Head (predice [X, Y, Z] GLOBALE)
+        # Translation Head (predict GLOBAL [X, Y, Z])
         self.translation_head = nn.Sequential(
-            nn.Linear(fusion_dim, 512),
+            nn.Linear(fusion_dim, 128),
             nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(512, 256),
+            nn.Linear(128, 64),
             nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(256, 3)  # [tx, ty, tz] GLOBALE in metri
+            nn.Linear(64, 3)  # [tx, ty, tz] GLOBAL in meters
         )
         
         self._init_weights()
@@ -127,27 +123,27 @@ class PointNetPose(nn.Module):
         Forward pass.
         
         Args:
-            point_cloud: (B, N, C) point cloud LOCALE
-            bbox_info: (B, 4) bbox normalizzato [cx%, cy%, w%, h%]
+            point_cloud: (B, N, C) LOCAL point cloud
+            bbox_info: (B, 4) normalized bbox [cx%, cy%, w%, h%]
         
         Returns:
-            rotation: (B, 4) quaternion normalizzato GLOBALE
-            translation: (B, 3) translation GLOBALE [x, y, z] in metri
+            rotation: (B, 4) normalized GLOBAL quaternion
+            translation: (B, 3) GLOBAL translation [x, y, z] in meters
         """
-        # 1. Estrai feature globali dalla point cloud
+        # 1. Extract global features from point cloud
         point_feat = self.backbone(point_cloud)
         
-        # 2. Processa bbox info
+        # 2. Process bbox info
         bbox_feat = self.bbox_processor(bbox_info)
         
         # 3. Fuse features
         fused_feat = torch.cat([point_feat, bbox_feat], dim=1)
         
-        # 4. Predici rotation
+        # 4. Predict rotation
         rotation = self.rotation_head(fused_feat)
-        rotation = F.normalize(rotation, p=2, dim=1)  # Normalizza quaternion
+        rotation = F.normalize(rotation, p=2, dim=1)  # Normalize quaternion
         
-        # 5. Predici translation GLOBALE
+        # 5. Predict GLOBAL translation
         translation = self.translation_head(fused_feat)
         
         return rotation, translation
