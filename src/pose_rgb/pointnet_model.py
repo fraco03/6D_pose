@@ -63,11 +63,15 @@ class PointNetBackbone(nn.Module):
 
 class PointNetPose(nn.Module):
     """
-    PointNet per 6D Pose Estimation.
+    PointNet per Rotation Estimation ONLY.
     
-    Predice rotation (quaternion) e translation GLOBALI da:
+    Predice solo la rotazione (quaternion) GLOBALE da:
     - Point cloud LOCALE (coordinate relative al crop)
     - Bbox info (posizione percentuale del crop nell'immagine)
+    
+    La traslazione è computata durante inference usando pinhole geometry:
+    X = (cx - cx_intr) * Z / fx, Y = (cy - cy_intr) * Z / fy
+    dove Z viene estratto direttamente dalla depth al centroide della bbox.
     """
     def __init__(self, input_channels=3, use_batch_norm=True):
         """
@@ -90,7 +94,7 @@ class PointNetPose(nn.Module):
         # Feature fusion: 256 (pointnet) + 64 (bbox) = 320
         fusion_dim = 256 + 64
         
-        # Rotation Head (predict quaternion)
+        # Rotation Head ONLY (predict quaternion)
         self.rotation_head = nn.Sequential(
             nn.Linear(fusion_dim, 128),
             nn.ReLU(),
@@ -99,19 +103,10 @@ class PointNetPose(nn.Module):
             nn.Linear(64, 4)  # Quaternion [w, x, y, z]
         )
         
-        # Translation Head (predict GLOBAL [X, Y, Z])
-        self.translation_head = nn.Sequential(
-            nn.Linear(fusion_dim, 128),
-            nn.ReLU(),
-            nn.Linear(128, 64),
-            nn.ReLU(),
-            nn.Linear(64, 3)  # [tx, ty, tz] GLOBAL in meters
-        )
-        
         self._init_weights()
     
     def _init_weights(self):
-        """Inizializza i pesi delle teste"""
+        """Inizializza i pesi della testa"""
         for m in self.modules():
             if isinstance(m, nn.Linear):
                 nn.init.xavier_normal_(m.weight)
@@ -128,7 +123,6 @@ class PointNetPose(nn.Module):
         
         Returns:
             rotation: (B, 4) normalized GLOBAL quaternion
-            translation: (B, 3) GLOBAL translation [x, y, z] in meters
         """
         # 1. Extract global features from point cloud
         point_feat = self.backbone(point_cloud)
@@ -139,14 +133,11 @@ class PointNetPose(nn.Module):
         # 3. Fuse features
         fused_feat = torch.cat([point_feat, bbox_feat], dim=1)
         
-        # 4. Predict rotation
+        # 4. Predict rotation ONLY
         rotation = self.rotation_head(fused_feat)
         rotation = F.normalize(rotation, p=2, dim=1)  # Normalize quaternion
         
-        # 5. Predict GLOBAL translation
-        translation = self.translation_head(fused_feat)
-        
-        return rotation, translation
+        return rotation
 
 
 class PointNetPoseWithRGBD(nn.Module):

@@ -20,34 +20,27 @@ class LineModPointCloudDataset(Dataset):
     Per ogni sample, crea una point cloud dall'oggetto cropando depth + RGB.
     """
     
-    def __init__(self, root_dir, split='train', num_points=1024, use_rgb=True, preload_images=False):
+    def __init__(self, root_dir, split='train', num_points=1024, use_rgb=True):
         """
         Args:
             root_dir: Path al dataset Linemod
             split: 'train' o 'test'
             num_points: Numero di punti da campionare per point cloud
             use_rgb: Se True, include RGB nella point cloud (6 canali)
-            preload_images: Se True, carica TUTTE le depth+RGB in RAM (velocissimo durante training, richiede ~3-5GB RAM)
         """
         self.root_dir = Path(root_dir)
         self.split = split
         self.num_points = num_points
         self.use_rgb = use_rgb
-        self.preload_images = preload_images
         self.config = get_linemod_config(root_dir)
         
         # Carica lista di samples
-        # Load list of samples
         self.samples = self._load_samples()
         
         # Preload YAML data in cache for speed-up
         self._preload_data()
         
-        # Preload images in RAM if requested
-        if self.preload_images:
-            self._preload_images()
-        
-        print(f"📊 Loaded {len(self.samples)} samples for {split} split (preload_images={preload_images})")
+        print(f"📊 Loaded {len(self.samples)} samples for {split} split")
     
     def _load_samples(self):
         """Load the list of all samples from the dataset"""
@@ -91,60 +84,17 @@ class LineModPointCloudDataset(Dataset):
         
         print(f"✅ Preloaded YAML data for {len(unique_objects)} objects")
     
-    def _preload_images(self):
-        """Preload ALL depth and RGB images in RAM cache"""
-        print("🔄 Preloading ALL images in RAM (this may take a minute)...")
-        self.image_cache = {}
-        
-        total = len(self.samples)
-        for idx, sample in enumerate(self.samples):
-            obj_id = sample['object_id']
-            img_id = sample['img_id']
-            
-            # Load and cache depth
-            depth_path = self.root_dir / "data" / f"{obj_id:02d}" / "depth" / f"{img_id:04d}.png"
-            if depth_path.exists():
-                depth = cv2.imread(str(depth_path), cv2.IMREAD_UNCHANGED).astype(np.float32)
-                self.image_cache[(obj_id, img_id, 'depth')] = depth
-            
-            # Load and cache RGB
-            if self.use_rgb:
-                rgb_path = self.root_dir / "data" / f"{obj_id:02d}" / "rgb" / f"{img_id:04d}.png"
-                if rgb_path.exists():
-                    rgb = cv2.imread(str(rgb_path))
-                    rgb = cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB)
-                    self.image_cache[(obj_id, img_id, 'rgb')] = rgb
-            
-            if (idx + 1) % max(1, total // 10) == 0:
-                print(f"   {idx+1}/{total} images loaded...")
-        
-        print(f"✅ Preloaded {len(self.image_cache)} images in RAM")
-    
     def __len__(self):
         return len(self.samples)
     
     def _load_depth(self, obj_id, img_id):
         """Load depth image in mm"""
-        # Try cache first if preload_images is enabled
-        if self.preload_images and hasattr(self, 'image_cache'):
-            key = (obj_id, img_id, 'depth')
-            if key in self.image_cache:
-                return self.image_cache[key]
-        
-        # Fall back to disk
         depth_path = self.root_dir / "data" / f"{obj_id:02d}" / "depth" / f"{img_id:04d}.png"
         depth = cv2.imread(str(depth_path), cv2.IMREAD_UNCHANGED)  # 16-bit
         return depth.astype(np.float32)
     
     def _load_rgb(self, obj_id, img_id):
         """Load RGB image"""
-        # Try cache first if preload_images is enabled
-        if self.preload_images and hasattr(self, 'image_cache'):
-            key = (obj_id, img_id, 'rgb')
-            if key in self.image_cache:
-                return self.image_cache[key]
-        
-        # Fall back to disk
         rgb_path = self.root_dir / "data" / f"{obj_id:02d}" / "rgb" / f"{img_id:04d}.png"
         rgb = cv2.imread(str(rgb_path))
         rgb = cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB)
@@ -285,7 +235,7 @@ class LineModPointCloudDataset(Dataset):
         # 5. Sample fixed number of points
         points = self._sample_points(points)
         
-        # 6. Normalized bbox info (like in RGB dataset)
+        # 6. Normalized bbox info
         H, W = depth.shape
         cx = x_bbox + w_bbox / 2.0
         cy = y_bbox + h_bbox / 2.0
@@ -300,13 +250,24 @@ class LineModPointCloudDataset(Dataset):
         from src.pose_rgb.pose_utils import convert_rotation_to_quaternion
         quat_gt = convert_rotation_to_quaternion(torch.from_numpy(R_gt).float())
         
+        # 8. Extract Z from depth at bbox centroid (for translation inference)
+        # Translation will be computed during inference using: X = (cx - cx_intr) * Z / fx, Y = (cy - cy_intr) * Z / fy
+        bbox_center_x = int(cx)
+        bbox_center_y = int(cy)
+        bbox_center_x = np.clip(bbox_center_x, 0, W - 1)
+        bbox_center_y = np.clip(bbox_center_y, 0, H - 1)
+        Z_mm = depth[bbox_center_y, bbox_center_x]
+        Z_m = Z_mm / 1000.0 if Z_mm > 0 else 0.0
+        
         return {
             'point_cloud': torch.from_numpy(points).float(),  # (num_points, 3 o 6) LOCALE
             'bbox_info': torch.from_numpy(bbox_info).float(),  # (4,) [cx%, cy%, w%, h%]
-            'rotation': quat_gt,  # (4,) quaternion GLOBALE
-            'translation': torch.from_numpy(t_gt).float(),  # (3,) in metri GLOBALE
+            'rotation': quat_gt,  # (4,) quaternion GLOBALE - ONLY PREDICTION TARGET
             'object_id': obj_id,
             'img_id': img_id,
             'cam_K': torch.from_numpy(cam_K).float(),
-            'bbox': torch.from_numpy(bbox).float()  # (4,) [x, y, w, h]
+            'bbox': torch.from_numpy(bbox).float(),  # (4,) [x, y, w, h]
+            'depth_z': torch.tensor(Z_m, dtype=torch.float32),  # Z in meters from depth
+            # Ground truth (for evaluation only, not used in training loss)
+            'gt_translation': torch.from_numpy(t_gt).float(),  # (3,) for eval metrics
         }
