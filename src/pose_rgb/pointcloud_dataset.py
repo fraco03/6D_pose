@@ -20,18 +20,20 @@ class LineModPointCloudDataset(Dataset):
     Per ogni sample, crea una point cloud dall'oggetto cropando depth + RGB.
     """
     
-    def __init__(self, root_dir, split='train', num_points=1024, use_rgb=True):
+    def __init__(self, root_dir, split='train', num_points=1024, use_rgb=True, preload_images=False):
         """
         Args:
             root_dir: Path al dataset Linemod
             split: 'train' o 'test'
             num_points: Numero di punti da campionare per point cloud
             use_rgb: Se True, include RGB nella point cloud (6 canali)
+            preload_images: Se True, carica TUTTE le depth+RGB in RAM (velocissimo durante training, richiede ~3-5GB RAM)
         """
         self.root_dir = Path(root_dir)
         self.split = split
         self.num_points = num_points
         self.use_rgb = use_rgb
+        self.preload_images = preload_images
         self.config = get_linemod_config(root_dir)
         
         # Carica lista di samples
@@ -41,7 +43,11 @@ class LineModPointCloudDataset(Dataset):
         # Preload YAML data in cache for speed-up
         self._preload_data()
         
-        print(f"📊 Loaded {len(self.samples)} samples for {split} split")
+        # Preload images in RAM if requested
+        if self.preload_images:
+            self._preload_images()
+        
+        print(f"📊 Loaded {len(self.samples)} samples for {split} split (preload_images={preload_images})")
     
     def _load_samples(self):
         """Load the list of all samples from the dataset"""
@@ -85,17 +91,60 @@ class LineModPointCloudDataset(Dataset):
         
         print(f"✅ Preloaded YAML data for {len(unique_objects)} objects")
     
+    def _preload_images(self):
+        """Preload ALL depth and RGB images in RAM cache"""
+        print("🔄 Preloading ALL images in RAM (this may take a minute)...")
+        self.image_cache = {}
+        
+        total = len(self.samples)
+        for idx, sample in enumerate(self.samples):
+            obj_id = sample['object_id']
+            img_id = sample['img_id']
+            
+            # Load and cache depth
+            depth_path = self.root_dir / "data" / f"{obj_id:02d}" / "depth" / f"{img_id:04d}.png"
+            if depth_path.exists():
+                depth = cv2.imread(str(depth_path), cv2.IMREAD_UNCHANGED).astype(np.float32)
+                self.image_cache[(obj_id, img_id, 'depth')] = depth
+            
+            # Load and cache RGB
+            if self.use_rgb:
+                rgb_path = self.root_dir / "data" / f"{obj_id:02d}" / "rgb" / f"{img_id:04d}.png"
+                if rgb_path.exists():
+                    rgb = cv2.imread(str(rgb_path))
+                    rgb = cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB)
+                    self.image_cache[(obj_id, img_id, 'rgb')] = rgb
+            
+            if (idx + 1) % max(1, total // 10) == 0:
+                print(f"   {idx+1}/{total} images loaded...")
+        
+        print(f"✅ Preloaded {len(self.image_cache)} images in RAM")
+    
     def __len__(self):
         return len(self.samples)
     
     def _load_depth(self, obj_id, img_id):
         """Load depth image in mm"""
+        # Try cache first if preload_images is enabled
+        if self.preload_images and hasattr(self, 'image_cache'):
+            key = (obj_id, img_id, 'depth')
+            if key in self.image_cache:
+                return self.image_cache[key]
+        
+        # Fall back to disk
         depth_path = self.root_dir / "data" / f"{obj_id:02d}" / "depth" / f"{img_id:04d}.png"
         depth = cv2.imread(str(depth_path), cv2.IMREAD_UNCHANGED)  # 16-bit
         return depth.astype(np.float32)
     
     def _load_rgb(self, obj_id, img_id):
         """Load RGB image"""
+        # Try cache first if preload_images is enabled
+        if self.preload_images and hasattr(self, 'image_cache'):
+            key = (obj_id, img_id, 'rgb')
+            if key in self.image_cache:
+                return self.image_cache[key]
+        
+        # Fall back to disk
         rgb_path = self.root_dir / "data" / f"{obj_id:02d}" / "rgb" / f"{img_id:04d}.png"
         rgb = cv2.imread(str(rgb_path))
         rgb = cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB)
