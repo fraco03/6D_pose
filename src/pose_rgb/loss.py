@@ -52,38 +52,58 @@ class AutomaticWeightedLoss(nn.Module):
     Invece di cercare w_rot e w_trans a mano, la rete impara 'sx', 'sy', 'sz'.
     
     Loss = (Loss_A / (2 * sigma_A^2)) + log(sigma_A)
+    
+    Args:
+        use_disentangled: Se True, usa DisentangledTranslationLoss (XY separato da Z).
+                          Se False, usa una loss unificata per X,Y,Z (per PointNet).
     """
-    def __init__(self):
+    def __init__(self, use_disentangled=True):
         super(AutomaticWeightedLoss, self).__init__()
+        
+        self.use_disentangled = use_disentangled
         
         # Parametri apprendibili (inizializzati a 0 -> sigma=1)
         # sx: varianza per la rotazione
-        # sy: varianza per offset XY
-        # sz: varianza per profondità Z
-        self.sx = nn.Parameter(torch.tensor(0.0)) 
-        self.sy = nn.Parameter(torch.tensor(0.0))
-        self.sz = nn.Parameter(torch.tensor(0.0))
+        # st: varianza per translation (unificata) - usato solo se use_disentangled=False
+        # sy: varianza per offset XY - usato solo se use_disentangled=True
+        # sz: varianza per profondità Z - usato solo se use_disentangled=True
+        self.sx = nn.Parameter(torch.tensor(0.0))
+        
+        if use_disentangled:
+            self.sy = nn.Parameter(torch.tensor(0.0))
+            self.sz = nn.Parameter(torch.tensor(0.0))
+            self.trans_loss_fn = DisentangledTranslationLoss(use_log_z=True)
+        else:
+            self.st = nn.Parameter(torch.tensor(0.0))
+            self.trans_loss_fn = nn.SmoothL1Loss(reduction='mean')
         
         self.rot_loss_fn = RotationLoss()
-        self.trans_loss_fn = DisentangledTranslationLoss(use_log_z=True)
 
     def forward(self, pred_rot, gt_rot, pred_trans, gt_trans):
         # 1. Calcola le loss grezze
         l_rot = self.rot_loss_fn(pred_rot, gt_rot)
-        l_xy, l_z = self.trans_loss_fn(pred_trans, gt_trans)
         
-        # 2. Pesatura Automatica (Multi-Task Loss)
-        # Nota: usiamo exp(-s) invece di dividere per s^2 per stabilità numerica
-        
-        # Rotazione
-        loss_rot_weighted = l_rot * torch.exp(-self.sx) + self.sx
-        
-        # Traslazione XY
-        loss_xy_weighted = l_xy * torch.exp(-self.sy) + self.sy
-        
-        # Traslazione Z
-        loss_z_weighted = l_z * torch.exp(-self.sz) + self.sz
-        
-        total_loss = loss_rot_weighted + loss_xy_weighted + loss_z_weighted
-        
-        return total_loss, l_rot, l_xy, l_z
+        if self.use_disentangled:
+            # Modalità per pose_rgb: separa XY da Z
+            l_xy, l_z = self.trans_loss_fn(pred_trans, gt_trans)
+            
+            # Pesatura Automatica (Multi-Task Loss)
+            loss_rot_weighted = l_rot * torch.exp(-self.sx) + self.sx
+            loss_xy_weighted = l_xy * torch.exp(-self.sy) + self.sy
+            loss_z_weighted = l_z * torch.exp(-self.sz) + self.sz
+            
+            total_loss = loss_rot_weighted + loss_xy_weighted + loss_z_weighted
+            
+            return total_loss, l_rot, l_xy, l_z
+        else:
+            # Modalità per PointNet: translation unificata
+            l_trans = self.trans_loss_fn(pred_trans, gt_trans)
+            
+            # Pesatura Automatica
+            loss_rot_weighted = l_rot * torch.exp(-self.sx) + self.sx
+            loss_trans_weighted = l_trans * torch.exp(-self.st) + self.st
+            
+            total_loss = loss_rot_weighted + loss_trans_weighted
+            
+            # Per compatibilità col codice esistente, ritorniamo l_trans sia per XY che Z
+            return total_loss, l_rot, l_trans, l_trans
