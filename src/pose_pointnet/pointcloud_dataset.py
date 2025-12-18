@@ -235,6 +235,22 @@ class LineModPointCloudDataset(Dataset):
         # 5. Sample fixed number of points
         points = self._sample_points(points)
         
+        # 5b. ⚠️ APPLY INVERSE ROTATION to point cloud
+        # This transforms the point cloud into the coordinate frame of the GT rotation
+        # So that the network sees "normalized" geometry and learns to predict identity
+        points_xyz = points[:, :3]  # (N, 3) XYZ coordinates
+        
+        # Apply inverse rotation: R_inv = R^T (for orthogonal rotation matrices)
+        R_inv = R_gt.T  # (3, 3)
+        points_xyz_rotated = (R_inv @ points_xyz.T).T  # (N, 3)
+        
+        # Recombine with RGB if present
+        if points.shape[1] == 6:
+            points_rgb = points[:, 3:]
+            points = np.concatenate([points_xyz_rotated, points_rgb], axis=1)
+        else:
+            points = points_xyz_rotated
+        
         # 6. Normalized bbox info
         H, W = depth.shape
         cx = x_bbox + w_bbox / 2.0
@@ -247,7 +263,11 @@ class LineModPointCloudDataset(Dataset):
         ], dtype=np.float32)
         
         # 7. Convert rotation matrix to quaternion
+        # ⚠️ TARGET IS NOW IDENTITY because we already rotated the point cloud!
         from src.pose_rgb.pose_utils import convert_rotation_to_quaternion
+        quat_target = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)  # Identity quaternion
+        
+        # Keep GT rotation for reference (not used in loss)
         quat_gt = convert_rotation_to_quaternion(torch.from_numpy(R_gt).float())
         
         # 8. Extract Z from depth at bbox centroid (for translation inference)
@@ -260,9 +280,9 @@ class LineModPointCloudDataset(Dataset):
         Z_m = Z_mm / 1000.0 if Z_mm > 0 else 0.0
         
         return {
-            'point_cloud': torch.from_numpy(points).float(),  # (num_points, 3 o 6) LOCALE
+            'point_cloud': torch.from_numpy(points).float(),  # (num_points, 3 o 6) ROTATED to identity frame
             'bbox_info': torch.from_numpy(bbox_info).float(),  # (4,) [cx%, cy%, w%, h%]
-            'rotation': torch.from_numpy(quat_gt),  # (4,) quaternion GLOBALE - ONLY PREDICTION TARGET
+            'rotation': torch.from_numpy(quat_target).float(),  # (4,) IDENTITY - network predicts identity!
             'object_id': obj_id,
             'img_id': img_id,
             'cam_K': torch.from_numpy(cam_K).float(),
@@ -270,4 +290,5 @@ class LineModPointCloudDataset(Dataset):
             'depth_z': torch.tensor(Z_m, dtype=torch.float32),  # Z in meters from depth
             # Ground truth (for evaluation only, not used in training loss)
             'gt_translation': torch.from_numpy(t_gt).float(),  # (3,) for eval metrics
+            'gt_rotation': quat_gt,  # (4,) for eval metrics only
         }
