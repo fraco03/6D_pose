@@ -18,6 +18,25 @@ class RotationLoss(nn.Module):
         loss = 1.0 - torch.abs(dot_product)
         return loss.mean()
     
+class RotationGeodesicLoss(nn.Module):
+    """
+    Geodesic loss between two rotations represented as quaternions.
+    Based on the angle between the two rotations.
+    """
+    def __init__(self):
+        super(RotationGeodesicLoss, self).__init__()
+
+    def forward(self, pred_q, gt_q):
+        # Normalizzazione di sicurezza (fondamentale)
+        pred_q = torch.nn.functional.normalize(pred_q, p=2, dim=1)
+        gt_q = torch.nn.functional.normalize(gt_q, p=2, dim=1)
+        
+        dot_product = torch.sum(pred_q * gt_q, dim=1)
+        # Clamp per evitare errori numerici che portano a cos^{-1} fuori dominio
+        dot_product = torch.clamp(dot_product, -1.0, 1.0)
+        angles = 2.0 * torch.acos(torch.abs(dot_product))  # Angolo in radianti
+        return angles.mean()
+    
 class PoseMatchingLoss(nn.Module):
     """
     ROTATION ONLY pose matching loss
