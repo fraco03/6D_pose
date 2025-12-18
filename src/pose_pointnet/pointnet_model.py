@@ -122,7 +122,7 @@ class PointNetPose(nn.Module):
             bbox_info: (B, 4) normalized bbox [cx%, cy%, w%, h%]
         
         Returns:
-            rotation: (B, 4) normalized GLOBAL quaternion
+            rotation: (B, 4) normalized quaternion
         """
         # 1. Extract global features from point cloud
         point_feat = self.backbone(point_cloud)
@@ -147,7 +147,7 @@ class PointNetPoseWithRGBD(nn.Module):
     """
     def __init__(self):
         super(PointNetPoseWithRGBD, self).__init__()
-        # PointNet con 6 canali input (xyz + rgb)
+        # PointNet with 6 input channels (xyz + rgb)
         self.pointnet = PointNetPose(input_channels=6, use_batch_norm=True)
     
     def forward(self, point_cloud_rgbd):
