@@ -209,6 +209,8 @@ class LineModPoseDepthDataset(Dataset):
         return {
             'image': img_tensor,
             'depth': depth_tensor,
+            'img_id': sample['img_id'],
+            'img_path': str(sample['img_path']),
             'rotation': torch.from_numpy(sample['rotation']).float(),
             'translation': torch.from_numpy(sample['translation']).float(),
             '3D_center': torch.from_numpy(sample['3D_center']).float(),
