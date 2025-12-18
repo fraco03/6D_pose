@@ -37,11 +37,48 @@ class RotationPredictionModel(nn.Module):
             nn.Dropout(0.3),
             nn.Linear(512, num_classes)  # Output 4 values for quaternion
         )
+
+        self._init_trainable_layers()
         
         # Freeze the backbone if specified
         if freeze_backbone:
             self.freeze_backbone()
 
+    def _init_trainable_layers(self):
+        """
+        Initialize trainable layers with appropriate strategies:
+        - Conv layers: Kaiming initialization
+        - Linear layers: Xavier initialization
+        """
+        # Initialize depth_net (CNN)
+        for module in self.depth_net.modules():
+            if isinstance(module, nn.Conv2d):
+                # Kaiming initialization for convolutional layers
+                nn.init.kaiming_normal_(module.weight, mode='fan_out', nonlinearity='relu')
+                if module.bias is not None:
+                    nn.init.constant_(module.bias, 0)
+            elif isinstance(module, nn.BatchNorm2d):
+                nn.init.constant_(module.weight, 1)
+                nn.init.constant_(module.bias, 0)
+        
+        # Initialize fc layers (fully connected)
+        for module in self.fc.modules():
+            if isinstance(module, nn.Linear):
+                # Xavier initialization for linear layers
+                nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.constant_(module.bias, 0)
+        
+        # Special initialization for the output layer (quaternion)
+        # Inizializza il quaternione output vicino a [1, 0, 0, 0] (identità)
+        with torch.no_grad():
+            # Ultimo layer della fc
+            last_layer = self.fc[-1]  # Linear layer
+            last_layer.weight.normal_(0, 0.001)  # Piccole varianze
+            if last_layer.bias is not None:
+                last_layer.bias.data[0] = 1.0  # Inizia con w=1
+                last_layer.bias.data[1:] = 0.0  # x,y,z = 0
+    
     def freeze_backbone(self):
         """Freeze all parameters in the backbone."""
         for param in self.backbone.parameters():

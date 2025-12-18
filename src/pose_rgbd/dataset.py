@@ -189,6 +189,7 @@ class LineModPoseDepthDataset(Dataset):
         x, y, w, h = map(int, sample['bbox'])
         cropped_img = img[y:y + h, x:x + w]
         cropped_depth = depth_map[y:y + h, x:x + w]
+        cropped_depth = np.clip(cropped_depth, 0.1, 5.0)  # Clip to [0.1, 5.0] meters
 
         # Resize to desired size
         cropped_img = cv2.resize(cropped_img, self.image_size)
@@ -205,6 +206,10 @@ class LineModPoseDepthDataset(Dataset):
 
         img_tensor = torch.from_numpy(cropped_img).permute(2, 0, 1).float()
         depth_tensor = torch.from_numpy(cropped_depth).float()
+
+        depth_max = 2.0
+        depth_tensor = torch.clamp(depth_tensor / depth_max, 0.0, 1.0).unsqueeze(0)  # Normalize and add channel dim
+        
 
         return {
             'image': img_tensor,
