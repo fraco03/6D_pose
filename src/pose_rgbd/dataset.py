@@ -7,6 +7,7 @@ from torch.utils.data import Dataset
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 from src.pose_rgb.pose_utils import convert_rotation_to_quaternion
+from utils.linemod_config import get_linemod_config
 
 class LineModPoseDepthDataset(Dataset):
     """
@@ -54,6 +55,10 @@ class LineModPoseDepthDataset(Dataset):
         self.object_ids = object_ids if object_ids is not None else self.VALID_OBJECTS
         self.id_to_class = {obj_id: self.CLASS_NAMES[i] for i, obj_id in enumerate(self.VALID_OBJECTS)}
         self.input_standard_dimensions = input_standard_dimensions
+        
+        # Get cached config instance
+        self.config = get_linemod_config(str(self.root_dir))
+        
         self.samples = self._build_index()
 
         print(f" Loaded LineModPoseDepthDataset")
@@ -65,27 +70,27 @@ class LineModPoseDepthDataset(Dataset):
         samples = []
 
         for obj_id in self.object_ids:
-            obj_folder = f"{obj_id:02d}"
-            obj_path = self.data_dir / obj_folder
-
-            split_file = obj_path / f"{self.split}.txt"
-
-            if not split_file.exists():
-                print(f"Warning: Split file {split_file} does not exist.")
+            # Load split file using cached config
+            img_ids = self.config.get_split_file(obj_id, self.split)
+            if not img_ids:
                 continue
 
-            with open(split_file, 'r') as f:
-                img_ids = [int(line.strip()) for line in f.readlines()]  # Image IDs for this split
+            # Load GT data using cached config
+            try:
+                gt_data = self.config.get_gt_data(obj_id)
+            except FileNotFoundError:
+                print(f"Warning: GT file not found for object {obj_id}")
+                continue
 
-            # Ground truth information (including poses)
-            gt_file = obj_path / "gt.yml"
-            with open(gt_file, 'r') as f:
-                gt_data = yaml.safe_load(f)
+            # Load camera info using cached config
+            try:
+                info_data = self.config.get_camera_info(obj_id)
+            except FileNotFoundError:
+                print(f"Warning: Camera info file not found for object {obj_id}")
+                continue
 
-            # Camera intrinsics file
-            info_file = obj_path / "info.yml"
-            with open(info_file, 'r') as f:
-                info_data = yaml.safe_load(f)
+            obj_folder = f"{obj_id:02d}"
+            obj_path = self.data_dir / obj_folder
 
             # Load samples
             for img_id in img_ids:
