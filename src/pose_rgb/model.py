@@ -45,11 +45,22 @@ class ResNetRotation(nn.Module):
         # Maps the 2048 features to a 4D vector (Quaternion).
         # We add a hidden layer (512 or 1024) to learn non-linear relationships.
         self.rot_head = nn.Sequential(
-            nn.Flatten(),                # Flatten (B, 2048, 1, 1) -> (B, 2048)
+n           nn.Flatten(),
+            
+            # Layer 1: Estrazione Feature ad alto livello
             nn.Linear(feature_dim, 1024),
-            nn.ReLU(),                   # Non-linearity
-            nn.Dropout(p=0.2),           # Dropout to prevent overfitting
-            nn.Linear(1024, 4)           # Output: 4 values (w, x, y, z)
+            nn.BatchNorm1d(1024),        # Fondamentale per la stabilità
+            nn.LeakyReLU(0.1, inplace=True), # LeakyReLU non "uccide" i neuroni negativi come la ReLU
+            nn.Dropout(0.5),             # Dropout aggressivo per evitare di memorizzare il dataset
+            
+            # Layer 2: Raffinamento
+            nn.Linear(1024, 256),
+            nn.BatchNorm1d(256),
+            nn.LeakyReLU(0.1, inplace=True),
+            nn.Dropout(0.2),
+            
+            # Layer 3: Regressione Finale
+            nn.Linear(256, 4)            # Output: Quaternione grezzo
         )
 
         # Initialize the head weights (He initialization is good for ReLU)
@@ -86,8 +97,6 @@ class ResNetRotation(nn.Module):
 
             return q
         
-
-
 class TranslationNet(nn.Module):
     """
     Custom Lightweight Network for 3D Translation Estimation.
@@ -105,35 +114,41 @@ class TranslationNet(nn.Module):
     def __init__(self):
         super(TranslationNet, self).__init__()
 
-        # --- 1. VISUAL BRANCH (Simple CNN) ---
+        # --- 1. VISUAL BRANCH (Custom CNN) ---
         # Extracts features from the resized RGB crop (224x224).
-        # We use a sequence of Conv2d -> BatchNorm -> ReLU -> MaxPool.
+        # Since we train from scratch, we use a deeper architecture (4 blocks)
+        # to learn hierarchical features (edges -> shapes -> object parts).
         self.conv_layers = nn.Sequential(
-            # Block 1: Input (B, 3, 224, 224) -> Output (B, 32, 56, 56) there is the stride and maxpool
-            nn.Conv2d(3, 32, kernel_size=5, stride=2, padding=2),
+            # Block 1: Input (B, 3, 224, 224) -> Output (B, 32, 56, 56)
+            nn.Conv2d(3, 32, kernel_size=3, stride=2, padding=1),
             nn.BatchNorm2d(32),
             nn.ReLU(),
             nn.MaxPool2d(2), 
             
-            # Block 2: Output (B, 64, 56, 56) -> (B, 64, 28, 28)
-            nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
+            # Block 2: -> (B, 64, 28, 28)
+            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
             nn.BatchNorm2d(64),
             nn.ReLU(),
-            nn.MaxPool2d(2),
             
-            # Block 3: Output (B, 128, 14, 14) -> (B, 128, 7, 7)
-            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
+            # Block 3: -> (B, 128, 14, 14)
+            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),
             nn.BatchNorm2d(128),
             nn.ReLU(),
-            nn.MaxPool2d(2),
+
+            # Block 4: -> (B, 256, 7, 7)
+            # Added depth to capture more complex visual patterns
+            nn.Conv2d(128, 256, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(),
             
             # Final pooling to force a fixed size (4x4 spatial dims)
-            # Output: (B, 128, 4, 4)
+            # We use (4, 4) instead of (1, 1) to preserve spatial information
+            # Output: (B, 256, 4, 4)
             nn.AdaptiveAvgPool2d((4, 4)) 
         )
         
-        # Flattened visual vector size: 128 channels * 4 * 4 = 2048
-        self.visual_flat_dim = 128 * 4 * 4
+        # Flattened visual vector size: 256 channels * 4 * 4 = 4096
+        self.visual_flat_dim = 256 * 4 * 4
 
         # --- 2. GEOMETRIC BRANCH (MLP) ---
         # Processes the normalized BBox coordinates: [center_x%, center_y%, w%, h%]
@@ -149,11 +164,11 @@ class TranslationNet(nn.Module):
         geo_dim = 128
 
         # --- 3. FUSION & REGRESSION HEAD ---
-        # Concatenates Visual (2048) + Geometric (128) features.
+        # Concatenates Visual (4096) + Geometric (128) features.
         self.regressor = nn.Sequential(
             nn.Linear(self.visual_flat_dim + geo_dim, 512),
             nn.ReLU(),
-            nn.Dropout(0.3), # Dropout helps prevent overfitting on small datasets
+            nn.Dropout(0.4), # Increased Dropout to 0.4 for training from scratch
             nn.Linear(512, 128),
             nn.ReLU(),
             nn.Linear(128, 3) # Output: [delta_x, delta_y, z]
@@ -174,6 +189,9 @@ class TranslationNet(nn.Module):
                 nn.init.xavier_normal_(m.weight)
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
+            elif isinstance(m, (nn.BatchNorm2d, nn.BatchNorm1d)):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
 
     def forward(self, img, bbox_norm):
         """
@@ -189,13 +207,13 @@ class TranslationNet(nn.Module):
         """
         # 1. Process Visual Branch
         v = self.conv_layers(img)
-        v = v.view(v.size(0), -1) # Flatten
+        v = v.view(v.size(0), -1) # Flatten (B, 4096)
         
         # 2. Process Geometric Branch
-        g = self.geo_fc(bbox_norm)
+        g = self.geo_fc(bbox_norm) # (B, 128)
         
         # 3. Feature Fusion
-        combined = torch.cat((v, g), dim=1) # Shape (Batch, 2176)
+        combined = torch.cat((v, g), dim=1) # Shape (Batch, 4224)
         
         # 4. Prediction
         pred = self.regressor(combined)
