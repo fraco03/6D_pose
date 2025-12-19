@@ -68,12 +68,18 @@ class RotationPredictionModel(nn.Module):
             nn.Dropout(0.5),
             
             # Layer 2: Refinement
-            nn.Linear(1024, 256),
+            nn.Linear(1024, 512),
+            nn.BatchNorm1d(512),
+            nn.LeakyReLU(0.1, inplace=True),
+            nn.Dropout(0.2),
+
+            # Layer 3: More Refinement
+            nn.Linear(512, 256),
             nn.BatchNorm1d(256),
             nn.LeakyReLU(0.1, inplace=True),
             nn.Dropout(0.2),
             
-            # Layer 3: Final Regression to Quaternion
+            # Layer 4: Final Regression to Quaternion
             nn.Linear(256, 4)
         )
 
