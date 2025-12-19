@@ -45,22 +45,11 @@ class ResNetRotation(nn.Module):
         # Maps the 2048 features to a 4D vector (Quaternion).
         # We add a hidden layer (512 or 1024) to learn non-linear relationships.
         self.rot_head = nn.Sequential(
-            nn.Flatten(),
-            
-            # Layer 1: Estrazione Feature ad alto livello
+            nn.Flatten(),                # Flatten (B, 2048, 1, 1) -> (B, 2048)
             nn.Linear(feature_dim, 1024),
-            nn.BatchNorm1d(1024),        # Fondamentale per la stabilità
-            nn.LeakyReLU(0.1, inplace=True), # LeakyReLU non "uccide" i neuroni negativi come la ReLU
-            nn.Dropout(0.5),             # Dropout aggressivo per evitare di memorizzare il dataset
-            
-            # Layer 2: Raffinamento
-            nn.Linear(1024, 256),
-            nn.BatchNorm1d(256),
-            nn.LeakyReLU(0.1, inplace=True),
-            nn.Dropout(0.2),
-            
-            # Layer 3: Regressione Finale
-            nn.Linear(256, 4)            # Output: Quaternione grezzo
+            nn.ReLU(),                   # Non-linearity
+            nn.Dropout(p=0.2),           # Dropout to prevent overfitting
+            nn.Linear(1024, 4)           # Output: 4 values (w, x, y, z)
         )
 
         # Initialize the head weights (He initialization is good for ReLU)
@@ -97,6 +86,7 @@ class ResNetRotation(nn.Module):
 
             return q
         
+
 class TranslationNet(nn.Module):
     """
     Custom Lightweight Network for 3D Translation Estimation.
