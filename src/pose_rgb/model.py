@@ -45,7 +45,7 @@ class ResNetRotation(nn.Module):
         # Maps the 2048 features to a 4D vector (Quaternion).
         # We add a hidden layer (512 or 1024) to learn non-linear relationships.
         self.rot_head = nn.Sequential(
-n           nn.Flatten(),
+            nn.Flatten(),
             
             # Layer 1: Estrazione Feature ad alto livello
             nn.Linear(feature_dim, 1024),
