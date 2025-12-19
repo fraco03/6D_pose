@@ -148,3 +148,81 @@ class RotationPredictionModel(nn.Module):
         quaternion = quaternion / torch.norm(quaternion, dim=1, keepdim=True)
         
         return quaternion
+    
+# Updated 
+import torch
+import torch.nn as nn
+from torchvision.models import resnet50, ResNet50_Weights
+
+class RGBDRotationModel(nn.Module):
+    def __init__(self, pretrained=True):
+        super(RGBDRotationModel, self).__init__()
+        
+        # 1. Carichiamo la ResNet50 standard (input 3 canali)
+        weights = ResNet50_Weights.DEFAULT if pretrained else None
+        self.backbone = resnet50(weights=weights)
+        
+        # --- IL TRUCCO DEI 4 CANALI ---
+        # La ResNet originale ha: conv1 = Conv2d(3, 64, kernel=7, stride=2, padding=3)
+        # Noi la sostituiamo con: Conv2d(4, 64, ...)
+        
+        original_conv1 = self.backbone.conv1
+        
+        # Creiamo il nuovo layer con 4 canali in input
+        self.backbone.conv1 = nn.Conv2d(
+            in_channels=4, 
+            out_channels=original_conv1.out_channels,
+            kernel_size=original_conv1.kernel_size,
+            stride=original_conv1.stride,
+            padding=original_conv1.padding,
+            bias=original_conv1.bias
+        )
+        
+        # --- INIZIALIZZAZIONE INTELLIGENTE ---
+        # Non inizializzare a caso! Vogliamo tenere i pesi ImageNet per RGB.
+        with torch.no_grad():
+            # Copiamo i pesi originali nei primi 3 canali (R, G, B)
+            self.backbone.conv1.weight[:, :3, :, :] = original_conv1.weight
+            
+            # Per il 4° canale (Depth), usiamo la media dei canali RGB.
+            # Questo dà alla rete un buon punto di partenza (cerca bordi/pattern anche nella depth)
+            self.backbone.conv1.weight[:, 3, :, :] = torch.mean(original_conv1.weight, dim=1)
+
+        # Rimuoviamo il classifier originale (FC layer)
+        # ResNet50 sputa fuori un vettore di 2048 features dopo l'Average Pooling
+        self.feature_dim = self.backbone.fc.in_features # 2048
+        self.backbone.fc = nn.Identity() # Rimuoviamo il layer finale
+
+        # 2. Regression Head per i Quaternioni
+        # Input: 2048 features -> Output: 4 (Quaternione)
+        self.rot_head = nn.Sequential(
+            nn.Linear(self.feature_dim, 1024),
+            nn.BatchNorm1d(1024),
+            nn.LeakyReLU(0.1, inplace=True),
+            nn.Dropout(0.5), # Importante per evitare overfitting su dataset piccoli/strani
+            
+            nn.Linear(1024, 512),
+            nn.BatchNorm1d(512),
+            nn.LeakyReLU(0.1, inplace=True),
+            
+            nn.Linear(512, 4) # Output quaternione grezzo
+        )
+
+    def forward(self, rgb, depth):
+        """
+        rgb: (B, 3, H, W)
+        depth: (B, 1, H, W) -> Depth 'grezza'
+        """
+        # Concateniamo lungo la dimensione dei canali
+        x = torch.cat([rgb, depth], dim=1) # Diventa (B, 4, H, W)
+        
+        # Passiamo nel backbone modificato
+        features = self.backbone(x) # Output (B, 2048)
+        
+        # Head di regressione
+        q = self.rot_head(features)
+        
+        # Normalizzazione L2 obbligatoria per quaternioni validi
+        q = torch.nn.functional.normalize(q, p=2, dim=1)
+        
+        return q
