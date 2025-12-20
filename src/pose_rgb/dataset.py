@@ -180,8 +180,22 @@ class LineModPoseDataset(Dataset):
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
             # Crop using validated bounding box (already checked in _build_index)
-            x, y, w, h = map(int, sample['bbox'])
-            cropped_img = img[y:y + h, x:x + w]
+            H, W = img.shape[:2]
+            # clip bbox to image bounds
+            x0 = max(0, x)
+            y0 = max(0, y)
+            x1 = min(W, x + w)
+            y1 = min(H, y + h)
+
+            if x1 <= x0 or y1 <= y0:
+                print(f"Warning: Invalid/empty crop for {sample['img_path']} bbox {sample['bbox']}. Returning black image.")
+                cropped_img = np.zeros((self.image_size[1], self.image_size[0], 3), dtype=np.uint8)
+            else:
+                cropped_img = img[y0:y1, x0:x1]
+                cropped_img = cv2.resize(cropped_img, self.image_size)
+
+                # (optional) if you want cx/cy to match the clipped box:
+                x, y, w, h = x0, y0, (x1 - x0), (y1 - y0)
 
             # In rare cases if the crop is empty due to unexpected data, fallback to black
             if cropped_img.size == 0:
