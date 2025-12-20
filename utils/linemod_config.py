@@ -50,6 +50,11 @@ class LineModConfig:
         # Cache 3d models (on-demand)
         self._models_3d_cache: Dict[int, np.ndarray] = {}
         
+        # Cache YAML files (on-demand)
+        self._gt_data_cache: Dict[int, dict] = {}  # Ground truth data
+        self._camera_info_cache: Dict[int, dict] = {}  # Camera intrinsics
+        self._split_cache: Dict[tuple, list] = {}  # Split files (obj_id, split) -> img_ids
+        
         self._initialized = True
         print(f"✅ LineModConfig initialized: {self.dataset_root}")
     
@@ -155,6 +160,88 @@ class LineModConfig:
         """Get model info from models_info.yml"""
         return self.models_info[object_id]
     
+    def get_split_file(self, object_id: int, split: str = 'train') -> list:
+        """
+        Get image IDs for a given object and split.
+        
+        Args:
+            object_id: Object ID (1-15)
+            split: 'train' or 'test'
+        
+        Returns:
+            img_ids: List of image IDs
+        """
+        cache_key = (object_id, split)
+        
+        if cache_key in self._split_cache:
+            return self._split_cache[cache_key]
+        
+        obj_folder = f"{object_id:02d}"
+        split_file_path = self.data_dir / obj_folder / f"{split}.txt"
+        
+        if not split_file_path.exists():
+            print(f"Warning: Split file {split_file_path} does not exist.")
+            return []
+        
+        with open(split_file_path, 'r') as f:
+            img_ids = [int(line.strip()) for line in f.readlines()]
+        
+        # Cache
+        self._split_cache[cache_key] = img_ids
+        return img_ids
+    
+    def get_gt_data(self, object_id: int) -> dict:
+        """
+        Get ground truth data for an object.
+        
+        Args:
+            object_id: Object ID (1-15)
+        
+        Returns:
+            gt_data: Dictionary with ground truth annotations
+        """
+        if object_id in self._gt_data_cache:
+            return self._gt_data_cache[object_id]
+        
+        obj_folder = f"{object_id:02d}"
+        gt_file_path = self.data_dir / obj_folder / "gt.yml"
+        
+        if not gt_file_path.exists():
+            raise FileNotFoundError(f"GT file not found: {gt_file_path}")
+        
+        with open(gt_file_path, 'r') as f:
+            gt_data = yaml.safe_load(f)
+        
+        # Cache
+        self._gt_data_cache[object_id] = gt_data
+        return gt_data
+    
+    def get_camera_info(self, object_id: int) -> dict:
+        """
+        Get camera intrinsics for an object.
+        
+        Args:
+            object_id: Object ID (1-15)
+        
+        Returns:
+            camera_info: Dictionary with camera intrinsics per image
+        """
+        if object_id in self._camera_info_cache:
+            return self._camera_info_cache[object_id]
+        
+        obj_folder = f"{object_id:02d}"
+        info_file_path = self.data_dir / obj_folder / "info.yml"
+        
+        if not info_file_path.exists():
+            raise FileNotFoundError(f"Info file not found: {info_file_path}")
+        
+        with open(info_file_path, 'r') as f:
+            camera_info = yaml.safe_load(f)
+        
+        # Cache
+        self._camera_info_cache[object_id] = camera_info
+        return camera_info
+    
     def print_info(self):
         """Print dataset information"""
         print("=" * 60)
@@ -165,6 +252,9 @@ class LineModConfig:
         print(f"Models dir:     {self.models_dir}")
         print(f"Objects loaded: {len(self.models_info)}")
         print(f"3D models cached: {len(self._models_3d_cache)}")
+        print(f"GT data cached: {len(self._gt_data_cache)}")
+        print(f"Camera info cached: {len(self._camera_info_cache)}")
+        print(f"Split files cached: {len(self._split_cache)}")
         print("=" * 60)
         
         # Info for each object
