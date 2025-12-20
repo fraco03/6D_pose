@@ -270,7 +270,6 @@ def visualize_bbox(image_path):
     plt.axis('off')
     plt.title(f"Visualization: {os.path.basename(image_path)}")
     plt.show()
-
 def generate_synthetic_dataset(source_root, dest_root, bg_cache_dir, num_collages, max_objects_images):
     # Object IDs and class mapping (excluding objects 3 and 7)
     valid_obj_ids = [1, 2, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15]
@@ -342,16 +341,42 @@ def generate_synthetic_dataset(source_root, dest_root, bg_cache_dir, num_collage
             
             if not os.path.exists(src_img): continue
 
-            # Prepare YOLO labels
+            # Prepare YOLO labels with CLAMPING
             yolo_labels = []
+            img_w, img_h = 640, 480  # Standard LineMod dimensions
+
             for ann in anns:
                 oid = int(ann['obj_id'])
                 if oid in id_map:
-                    img_w, img_h = 640, 480
                     x, y, w, h = ann['obj_bb']
-                    xc, yc = (x + w/2)/img_w, (y + h/2)/img_h
-                    wn, hn = w/img_w, h/img_h
-                    yolo_labels.append(f"{id_map[oid]} {xc:.6f} {yc:.6f} {wn:.6f} {hn:.6f}")
+                    
+                    # 
+                    # --- CRITICAL FIX: Clamp coordinates to image boundaries ---
+                    # Sometimes GT boxes are slightly outside (e.g., -5 or 645)
+                    x1 = max(0, x)
+                    y1 = max(0, y)
+                    x2 = min(img_w, x + w)
+                    y2 = min(img_h, y + h)
+                    
+                    # Recalculate width/height after clamping
+                    w_clamped = x2 - x1
+                    h_clamped = y2 - y1
+                    
+                    # Only add label if the box is still valid (> 1 pixel)
+                    if w_clamped > 1 and h_clamped > 1:
+                        # Normalize to 0.0 - 1.0
+                        xc = (x1 + w_clamped/2) / img_w
+                        yc = (y1 + h_clamped/2) / img_h
+                        wn = w_clamped / img_w
+                        hn = h_clamped / img_h
+                        
+                        # Extra safety clip (floating point errors)
+                        xc = np.clip(xc, 0.0, 1.0)
+                        yc = np.clip(yc, 0.0, 1.0)
+                        wn = np.clip(wn, 0.0, 1.0)
+                        hn = np.clip(hn, 0.0, 1.0)
+
+                        yolo_labels.append(f"{id_map[oid]} {xc:.6f} {yc:.6f} {wn:.6f} {hn:.6f}")
             
             if not yolo_labels: continue
 
@@ -388,6 +413,9 @@ def generate_synthetic_dataset(source_root, dest_root, bg_cache_dir, num_collage
                 if os.path.exists(img_data['mask']):
                     img = cv2.imread(img_data['src'])
                     mask = cv2.imread(img_data['mask'], cv2.IMREAD_GRAYSCALE)
+                    
+                    if img is None or mask is None: continue
+
                     x, y, w, h = cv2.boundingRect(mask)
                     if w > 5 and h > 5:
                         crop_img = img[y:y+h, x:x+w]
@@ -446,7 +474,13 @@ def generate_synthetic_dataset(source_root, dest_root, bg_cache_dir, num_collage
             bg[y_off:y_off+nh, x_off:x_off+nw] = (img_aug * mask_f + roi_bg * (1 - mask_f)).astype(np.uint8)
             occupied_mask[y_off:y_off+nh, x_off:x_off+nw] = cv2.bitwise_or(roi_mask, mask_aug)
             
-            labels.append(f"{obj['cls']} {(x_off+nw/2)/w_bg:.6f} {(y_off+nh/2)/h_bg:.6f} {nw/w_bg:.6f} {nh/h_bg:.6f}")
+            # Synthetic labels (also safely clipped)
+            xc = (x_off+nw/2)/w_bg
+            yc = (y_off+nh/2)/h_bg
+            wn = nw/w_bg
+            hn = nh/h_bg
+            
+            labels.append(f"{obj['cls']} {np.clip(xc,0,1):.6f} {np.clip(yc,0,1):.6f} {np.clip(wn,0,1):.6f} {np.clip(hn,0,1):.6f}")
             
         fname = f"collage_{i:05d}"
         cv2.imwrite(os.path.join(dest_root, 'images/train', fname+'.jpg'), bg)
@@ -464,7 +498,6 @@ def generate_synthetic_dataset(source_root, dest_root, bg_cache_dir, num_collage
     # Note: We point 'val' to 'test' so training scripts have a validation set to use
     with open('./linemod.yaml', 'w') as f:
         f.write(f"path: {dest_root}\ntrain: images/train\nval: images/test\ntest: images/test\nnc: {len(class_names)}\nnames: {class_names}")
-
 def auto_labeled_dataset(dest_root, model_path, source_root, conf_threshold, iou_threshold):
     valid_obj_ids = [1, 2, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15]
     id_map = {obj_id: i for i, obj_id in enumerate(valid_obj_ids)}

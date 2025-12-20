@@ -67,7 +67,7 @@ class LineModPoseDataset(Dataset):
         self.samples = self._build_index()
 
         print(f" Loaded LineModPoseDepthDataset")
-        print(f"   Split: {self.split} (Ratio: {self.train_ratio})")
+        print(f"   Split: {self.split} (Ratio: {self.train_ratio if self.split=='train' else 1 - self.train_ratio})")
         print(f"   Objects: {self.object_ids}")
         print(f"   Total samples: {len(self.samples)}")
 
