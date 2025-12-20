@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 import random
 import shutil
 import requests
-
+from collections import defaultdict
 
 
 def compute_iou(box1, box2):
@@ -26,7 +26,6 @@ def compute_iou(box1, box2):
     area2 = (box2[2]-box2[0]) * (box2[3]-box2[1])
     union = area1 + area2 - inter
     return inter / union if union > 0 else 0
-
 
 # CHANGE iou FOR DIFFERENET mAP METRICS
 def calculate_adapted_map50(model_path, source_root, iou_thresh=0.5):
@@ -284,11 +283,12 @@ def generate_synthetic_dataset(source_root, dest_root, bg_cache_dir, num_collage
     if os.path.exists(dest_root): shutil.rmtree(dest_root)
     if not os.path.exists(bg_cache_dir): os.makedirs(bg_cache_dir)
 
-    for split in ['train', 'val']:
+    # Create only 'train' and 'test' directories (80/20 split)
+    for split in ['train', 'test']:
         for dtype in ['images', 'labels']:
             os.makedirs(os.path.join(dest_root, dtype, split), exist_ok=True)
 
-    # Download random background images
+    # --- DOWNLOAD BACKGROUNDS ---
     existing_bgs = [f for f in os.listdir(bg_cache_dir) if f.endswith('.jpg')]
     if len(existing_bgs) < 50:
         print("🌍 Downloading background images...")
@@ -304,7 +304,6 @@ def generate_synthetic_dataset(source_root, dest_root, bg_cache_dir, num_collage
 
     # --- HELPER FUNCTIONS ---
     def rotate_image(image, angle):
-        """Rotate image by given angle and adjust canvas size to fit"""
         h, w = image.shape[:2]
         center = (w // 2, h // 2)
         M = cv2.getRotationMatrix2D(center, angle, 1.0)
@@ -314,55 +313,102 @@ def generate_synthetic_dataset(source_root, dest_root, bg_cache_dir, num_collage
         M[1, 2] += (new_h / 2) - center[1]
         return cv2.warpAffine(image, M, (new_w, new_h), borderMode=cv2.BORDER_CONSTANT, borderValue=(0,0,0))
 
-    def get_train_ids(folder_path):
-        """Read train.txt and return set of training image IDs"""
-        txt_path = os.path.join(folder_path, 'train.txt')
-        if os.path.exists(txt_path):
-            with open(txt_path, 'r') as f:
-                return {line.strip() for line in f.readlines()}
-        return set()
+    # --- DATA COLLECTION & SPLITTING (80% Train / 20% Test) ---
+    print("📊 Analyzing and splitting data (80% Train / 20% Test)...")
+    
+    # Store training samples for collage generation (for non-02 classes)
+    train_objects_cache = []
+    
+    # Statistics
+    stats = {'train_02_real': 0, 'train_other_cached': 0, 'test_real': 0}
 
-    # --- PREPARE COLLAGE OBJECTS (EXCLUDING CLASS 02) ---
-    print("♻️  Loading objects for collages (excluding class 02)...")
-    objects_cache = []
-
-    for folder_str in tqdm(obj_folders):
-        # Skip class 02 - use real images for this class instead of collages
-        if int(folder_str) == 2:
-            continue
-
+    for folder_str in tqdm(obj_folders, desc="Processing Classes"):
         class_id = id_map[int(folder_str)]
+        is_class_02 = (int(folder_str) == 2)
         base_dir = os.path.join(source_root, folder_str)
+        gt_path = os.path.join(base_dir, 'gt.yml')
         
-        # Load only training images to avoid data leakage
-        train_ids = get_train_ids(base_dir)
-        if not train_ids: continue
-
-        # Sample up to 50 images to avoid memory issues
-        valid_files = [f"{int(x):04d}.png" for x in train_ids]
-        sampled_files = random.sample(valid_files, min(len(valid_files), 50))
-
-        for fname in sampled_files:
-            img_path = os.path.join(base_dir, 'rgb', fname)
+        if not os.path.exists(gt_path): continue
+        
+        # 1. Load GT Data
+        with open(gt_path, 'r') as f: gt_data = yaml.safe_load(f)
+        
+        # 2. Collect all valid images for this class
+        all_images = []
+        for img_id_int, anns in gt_data.items():
+            fname = f"{img_id_int:04d}.png"
+            src_img = os.path.join(base_dir, 'rgb', fname)
             mask_path = os.path.join(base_dir, 'mask', fname)
             
-            if os.path.exists(img_path) and os.path.exists(mask_path):
-                img = cv2.imread(img_path)
-                mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
-                
-                x, y, w, h = cv2.boundingRect(mask)
-                if w > 5 and h > 5:
-                    crop_img = img[y:y+h, x:x+w]
-                    crop_mask = mask[y:y+h, x:x+w]
-                    _, crop_mask = cv2.threshold(crop_mask, 127, 255, cv2.THRESH_BINARY)
-                    objects_cache.append({'cls': class_id, 'img': crop_img, 'mask': crop_mask})
+            if not os.path.exists(src_img): continue
 
-    if not objects_cache: raise RuntimeError("❌ Object cache is empty! Check paths.")
+            # Prepare YOLO labels
+            yolo_labels = []
+            for ann in anns:
+                oid = int(ann['obj_id'])
+                if oid in id_map:
+                    img_w, img_h = 640, 480
+                    x, y, w, h = ann['obj_bb']
+                    xc, yc = (x + w/2)/img_w, (y + h/2)/img_h
+                    wn, hn = w/img_w, h/img_h
+                    yolo_labels.append(f"{id_map[oid]} {xc:.6f} {yc:.6f} {wn:.6f} {hn:.6f}")
+            
+            if not yolo_labels: continue
 
-    # --- GENERATE SYNTHETIC COLLAGES (ALL FOR TRAINING) ---
+            # Store image data
+            all_images.append({
+                'src': src_img,
+                'mask': mask_path,
+                'fname': fname,
+                'labels': yolo_labels
+            })
+
+        # 3. Shuffle and Split 80/20
+        random.shuffle(all_images)
+        split_idx = int(len(all_images) * 0.80)
+        
+        train_subset = all_images[:split_idx]
+        test_subset = all_images[split_idx:]
+        
+        # --- HANDLE TRAINING SUBSET (80%) ---
+        if is_class_02:
+            # Class 02: Save real images directly to train folder
+            for img_data in train_subset:
+                dst_fname = f"real_{folder_str}_{img_data['fname']}"
+                shutil.copy(img_data['src'], os.path.join(dest_root, 'images/train', dst_fname))
+                with open(os.path.join(dest_root, 'labels/train', dst_fname.replace('.png','.txt')), 'w') as f:
+                    f.write('\n'.join(img_data['labels']))
+                stats['train_02_real'] += 1
+        else:
+            # Other Classes: Cache images/masks for collage generation
+            # Limit to 50 samples to prevent memory overflow, but randomly selected from the 80% split
+            collage_samples = random.sample(train_subset, min(len(train_subset), 50))
+            
+            for img_data in collage_samples:
+                if os.path.exists(img_data['mask']):
+                    img = cv2.imread(img_data['src'])
+                    mask = cv2.imread(img_data['mask'], cv2.IMREAD_GRAYSCALE)
+                    x, y, w, h = cv2.boundingRect(mask)
+                    if w > 5 and h > 5:
+                        crop_img = img[y:y+h, x:x+w]
+                        crop_mask = mask[y:y+h, x:x+w]
+                        _, crop_mask = cv2.threshold(crop_mask, 127, 255, cv2.THRESH_BINARY)
+                        train_objects_cache.append({'cls': class_id, 'img': crop_img, 'mask': crop_mask})
+                        stats['train_other_cached'] += 1
+
+        # --- HANDLE TEST SUBSET (20%) ---
+        for img_data in test_subset:
+            dst_fname = f"real_{folder_str}_{img_data['fname']}"
+            shutil.copy(img_data['src'], os.path.join(dest_root, 'images/test', dst_fname))
+            with open(os.path.join(dest_root, 'labels/test', dst_fname.replace('.png','.txt')), 'w') as f:
+                f.write('\n'.join(img_data['labels']))
+            stats['test_real'] += 1
+
+    # --- GENERATE SYNTHETIC COLLAGES (Using only Training Data) ---
     print(f"🚀 Generating {num_collages} synthetic collages...")
+    if not train_objects_cache: raise RuntimeError("❌ Training cache empty!")
 
-    for i in tqdm(range(num_collages)):
+    for i in tqdm(range(num_collages), desc="Synthesizing"):
         bg = cv2.imread(random.choice(bg_files))
         bg = cv2.resize(bg, (640, 640))
         h_bg, w_bg = bg.shape[:2]
@@ -371,10 +417,9 @@ def generate_synthetic_dataset(source_root, dest_root, bg_cache_dir, num_collage
         occupied_mask = np.zeros((h_bg, w_bg), dtype=np.uint8)
         
         for _ in range(random.randint(1, max_objects_images)):
-            obj = random.choice(objects_cache)
+            obj = random.choice(train_objects_cache)
             img_aug, mask_aug = obj['img'].copy(), obj['mask'].copy()
             
-            # Apply rotation and scaling augmentation
             angle = random.randint(-180, 180)
             img_aug = rotate_image(img_aug, angle)
             mask_aug = rotate_image(mask_aug, angle)
@@ -385,7 +430,6 @@ def generate_synthetic_dataset(source_root, dest_root, bg_cache_dir, num_collage
             img_aug = cv2.resize(img_aug, (nw, nh))
             mask_aug = cv2.resize(mask_aug, (nw, nh))
             
-            # Find non-overlapping position
             placed = False
             for _ in range(20):
                 x_off = random.randint(0, w_bg - nw)
@@ -397,7 +441,6 @@ def generate_synthetic_dataset(source_root, dest_root, bg_cache_dir, num_collage
             
             if not placed: continue
             
-            # Paste object onto background using alpha blending
             roi_bg = bg[y_off:y_off+nh, x_off:x_off+nw]
             mask_f = cv2.merge([mask_aug.astype(float)/255.0]*3)
             bg[y_off:y_off+nh, x_off:x_off+nw] = (img_aug * mask_f + roi_bg * (1 - mask_f)).astype(np.uint8)
@@ -405,79 +448,22 @@ def generate_synthetic_dataset(source_root, dest_root, bg_cache_dir, num_collage
             
             labels.append(f"{obj['cls']} {(x_off+nw/2)/w_bg:.6f} {(y_off+nh/2)/h_bg:.6f} {nw/w_bg:.6f} {nh/h_bg:.6f}")
             
-        # Save to training set
         fname = f"collage_{i:05d}"
         cv2.imwrite(os.path.join(dest_root, 'images/train', fname+'.jpg'), bg)
         if labels:
             with open(os.path.join(dest_root, 'labels/train', fname+'.txt'), 'w') as f:
                 f.write('\n'.join(labels))
 
-    # --- PROCESS REAL IMAGES (MIXED LOGIC BY CLASS) ---
-    print("📸 Processing real images...")
-    stats = {'train_02': 0, 'skipped_train_others': 0, 'val': 0}
-
-    for folder_str in tqdm(obj_folders):
-        is_class_02 = (int(folder_str) == 2)
-        base_dir = os.path.join(source_root, folder_str)
-        gt_path = os.path.join(base_dir, 'gt.yml')
-        
-        if not os.path.exists(gt_path): continue
-        
-        train_ids = get_train_ids(base_dir)
-        with open(gt_path, 'r') as f: gt_data = yaml.safe_load(f)
-        
-        for img_id_int, anns in gt_data.items():
-            img_id_str = str(img_id_int)
-            fname = f"{img_id_int:04d}.png"
-            src_img = os.path.join(base_dir, 'rgb', fname)
-            
-            if not os.path.exists(src_img): continue
-            
-            is_in_train_txt = (img_id_str in train_ids)
-            
-            if is_in_train_txt:
-                # Training image
-                if is_class_02:
-                    # Use real images for class 02 in training
-                    target_subset = 'train'
-                    stats['train_02'] += 1
-                else:
-                    # Skip training images for other classes (use collages instead)
-                    stats['skipped_train_others'] += 1
-                    continue 
-            else:
-                # Validation image - use for all classes
-                target_subset = 'val'
-                stats['val'] += 1
-            
-            # Copy image and convert labels
-            dst_fname = f"real_{folder_str}_{fname}"
-            shutil.copy(src_img, os.path.join(dest_root, 'images', target_subset, dst_fname))
-            
-            yolo_labels = []
-            for ann in anns:
-                oid = int(ann['obj_id'])
-                if oid in id_map:
-                    img_w, img_h = 640, 480  # Standard LineMOD dimensions
-                    x, y, w, h = ann['obj_bb']
-                    xc, yc = (x + w/2)/img_w, (y + h/2)/img_h
-                    wn, hn = w/img_w, h/img_h
-                    yolo_labels.append(f"{id_map[oid]} {xc:.6f} {yc:.6f} {wn:.6f} {hn:.6f}")
-                    
-            if yolo_labels:
-                with open(os.path.join(dest_root, 'labels', target_subset, dst_fname.replace('.png','.txt')), 'w') as f:
-                    f.write('\n'.join(yolo_labels))
-
     print(f"\n✅ Dataset generated successfully!")
-    print(f"   [TRAINING]  Synthetic collages (no class 2):  {num_collages}")
-    print(f"   [TRAINING]  Real images (class 2 only):       {stats['train_02']}")
-    print(f"   [SKIPPED]   Real training images (others):    {stats['skipped_train_others']}")
-    print(f"   [VALIDATION] Real images (all classes):       {stats['val']}")
+    print(f"   [TRAIN] Real images (class 2): {stats['train_02_real']}")
+    print(f"   [TRAIN] Objects cached for synth: {stats['train_other_cached']}")
+    print(f"   [TRAIN] Synthetic collages: {num_collages}")
+    print(f"   [TEST]  Real images (20% split): {stats['test_real']}")
 
     # Create YAML configuration
+    # Note: We point 'val' to 'test' so training scripts have a validation set to use
     with open('./linemod.yaml', 'w') as f:
-        f.write(f"path: {dest_root}\ntrain: images/train\nval: images/val\nnc: {len(class_names)}\nnames: {class_names}")
-        
+        f.write(f"path: {dest_root}\ntrain: images/train\nval: images/test\ntest: images/test\nnc: {len(class_names)}\nnames: {class_names}")
 
 def auto_labeled_dataset(dest_root, model_path, source_root, conf_threshold, iou_threshold):
     valid_obj_ids = [1, 2, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15]
@@ -486,7 +472,8 @@ def auto_labeled_dataset(dest_root, model_path, source_root, conf_threshold, iou
 
     # --- SETUP DIRECTORIES ---
     if os.path.exists(dest_root): shutil.rmtree(dest_root)
-    for split in ['train', 'val']:
+    # Create 'train' and 'test' directories (80/20 split)
+    for split in ['train', 'test']:
         for dtype in ['images', 'labels']:
             os.makedirs(os.path.join(dest_root, dtype, split), exist_ok=True)
 
@@ -523,45 +510,49 @@ def auto_labeled_dataset(dest_root, model_path, source_root, conf_threshold, iou
         union = b1_area + b2_area - inter_area
         return inter_area / union if union > 0 else 0
 
-    def get_train_ids(folder_path):
-        """Read train.txt and return set of training image IDs"""
-        txt_path = os.path.join(folder_path, 'train.txt')
-        if os.path.exists(txt_path):
-            with open(txt_path, 'r') as f:
-                return {line.strip() for line in f.readlines()}
-        return set()
-
     # --- MAIN LOOP ---
-    print("🚀 Starting auto-labeling process...")
+    print("🚀 Starting auto-labeling process with 80/20 split...")
     total_added = 0
+    stats = {'train': 0, 'test': 0}
 
     for folder_str in obj_folders:
         folder_int = int(folder_str)
         base_dir = os.path.join(source_root, folder_str)
-        
-        train_ids_set = get_train_ids(base_dir)
         rgb_dir = os.path.join(base_dir, 'rgb')
         gt_path = os.path.join(base_dir, 'gt.yml')
         
         if not os.path.exists(gt_path): continue
         
+        # 1. Load all Ground Truth Data
         with open(gt_path, 'r') as f: gt_data = yaml.safe_load(f)
-        img_ids = list(gt_data.keys())
+        all_img_ids = list(gt_data.keys())
         
-        for img_key in tqdm(img_ids, desc=f"Folder {folder_str}"):
+        # 2. Shuffle and Split (80% Train, 20% Test)
+        random.shuffle(all_img_ids)
+        split_idx = int(len(all_img_ids) * 0.80)
+        
+        train_ids = set(all_img_ids[:split_idx])
+        test_ids = set(all_img_ids[split_idx:])
+        
+        for img_key in tqdm(all_img_ids, desc=f"Processing Folder {folder_str}"):
             img_key_str = str(img_key)
             fname = f"{img_key:04d}.png"
             src_img_path = os.path.join(rgb_dir, fname)
             
             if not os.path.exists(src_img_path): continue
             
-            # Determine split based on train.txt
-            subset = 'train' if img_key_str in train_ids_set else 'val'
+            # Determine subset
+            if img_key in train_ids:
+                subset = 'train'
+                stats['train'] += 1
+            else:
+                subset = 'test'
+                stats['test'] += 1
                 
             img = cv2.imread(src_img_path)
             h_img, w_img = img.shape[:2]
             
-            # Collect ground truth labels
+            # Collect Ground Truth Labels
             final_labels = [] 
             gt_boxes_yolo = [] 
             
@@ -575,7 +566,9 @@ def auto_labeled_dataset(dest_root, model_path, source_root, conf_threshold, iou
                     gt_boxes_yolo.append([cls_id] + bbox_yolo)
                     final_labels.append(f"{cls_id} {bbox_yolo[0]:.6f} {bbox_yolo[1]:.6f} {bbox_yolo[2]:.6f} {bbox_yolo[3]:.6f}")
             
-            # Auto-labeling: only for training images, excluding folder 02 (already perfect)
+            # --- AUTO-LABELING LOGIC ---
+            # 1. Only run on TRAINING data (Test data must remain Ground Truth only)
+            # 2. Skip Folder 02 (Benchvise) completely for auto-labeling as requested previously
             if subset == 'train' and folder_int != 2:
                 results = model.predict(img, conf=conf_threshold, verbose=False, iou=0.4)
                 
@@ -584,7 +577,7 @@ def auto_labeled_dataset(dest_root, model_path, source_root, conf_threshold, iou
                         p_cls = int(box.cls[0])
                         p_xywh = box.xywhn[0].tolist()
                         
-                        # Check if prediction duplicates existing ground truth
+                        # Check against Ground Truth to avoid duplicates
                         is_duplicate = False
                         for gt_b in gt_boxes_yolo:
                             gt_cls = gt_b[0]
@@ -596,7 +589,7 @@ def auto_labeled_dataset(dest_root, model_path, source_root, conf_threshold, iou
                                     is_duplicate = True
                                     break
                         
-                        # Add new label if not duplicate
+                        # Add new label if unique
                         if not is_duplicate:
                             final_labels.append(f"{p_cls} {p_xywh[0]:.6f} {p_xywh[1]:.6f} {p_xywh[2]:.6f} {p_xywh[3]:.6f}")
                             total_added += 1
@@ -610,10 +603,13 @@ def auto_labeled_dataset(dest_root, model_path, source_root, conf_threshold, iou
                     f.write('\n'.join(final_labels))
 
     print(f"\n✅ Dataset generated successfully!")
-    print(f"   ➕ Extra labels added automatically: {total_added}")
+    print(f"   [TRAIN] Images processed: {stats['train']}")
+    print(f"   [TEST]  Images processed: {stats['test']}")
+    print(f"   ➕ Extra labels added automatically (Train only): {total_added}")
     print(f"   📁 Saved to: {dest_root}")
 
     # Create YAML configuration
+    # Note: 'val' points to 'test' so training scripts have a valid validation path
     names = ['ape', 'benchvise', 'camera', 'can', 'cat', 'driller', 'duck', 'eggbox', 'glue', 'holepuncher', 'iron', 'lamp', 'phone']
     with open(os.path.join(dest_root, 'data.yaml'), 'w') as f:
-        f.write(f"path: {dest_root}\ntrain: images/train\nval: images/val\nnc: 13\nnames: {names}")
+        f.write(f"path: {dest_root}\ntrain: images/train\nval: images/test\ntest: images/test\nnc: 13\nnames: {names}")
