@@ -1,4 +1,5 @@
 import os
+import random
 import cv2
 import numpy as np
 import yaml
@@ -7,6 +8,7 @@ from torch.utils.data import Dataset, DataLoader
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 from .pose_utils import convert_rotation_to_quaternion
+from utils.linemod_config import get_linemod_config
 
 class LineModPoseDataset(Dataset):
     """
@@ -33,7 +35,9 @@ class LineModPoseDataset(Dataset):
         image_size: Tuple[int, int] = (224, 224),
         transform = None,
         normalize: bool = True,
-        input_standard_dimensions: Tuple[int, int] = (640, 480)
+        input_standard_dimensions: Tuple[int, int] = (640, 480),
+        train_ratio: float = 0.8,  # Percentage of data for training
+        random_seed: int = 42      # Fixed seed for reproducibility
     ):
         """
         Args:
@@ -51,46 +55,62 @@ class LineModPoseDataset(Dataset):
         self.image_size = image_size
         self.transform = transform
         self.normalize = normalize
+        self.train_ratio = train_ratio
+        self.random_seed = random_seed
         
         self.object_ids = object_ids if object_ids is not None else self.VALID_OBJECTS
-
         self.id_to_class = {obj_id: self.CLASS_NAMES[i] for i, obj_id in enumerate(self.VALID_OBJECTS)}
         self.input_standard_dimensions = input_standard_dimensions
+        
+        self.config = get_linemod_config(str(self.root_dir))
+        
         self.samples = self._build_index()
 
-        print(f" Loaded LineModPoseDataset")
-        print(f"   Split: {self.split}")
-        print(f"   Dir : {self.object_ids}")
+        print(f" Loaded LineModPoseDepthDataset")
+        print(f"   Split: {self.split} (Ratio: {self.train_ratio})")
+        print(f"   Objects: {self.object_ids}")
         print(f"   Total samples: {len(self.samples)}")
 
     def _build_index(self) -> List[Dict]:
         samples = []
 
         for obj_id in self.object_ids:
+            # 1. Load GT data and Camera info using cached config
+            try:
+                gt_data = self.config.get_gt_data(obj_id)
+                info_data = self.config.get_camera_info(obj_id)
+            except FileNotFoundError:
+                print(f"Warning: Data files not found for object {obj_id}")
+                continue
+
+            # 2. Retrieve ALL valid image IDs available for this object
+            # We use the keys from gt_data as the master list.
+            all_img_ids = sorted([int(k) for k in gt_data.keys()])
+            
+            if not all_img_ids:
+                continue
+
+            # 3. Apply Deterministic Shuffle
+            # Using a local Random instance prevents affecting the global random state
+            rng = random.Random(self.random_seed)
+            rng.shuffle(all_img_ids)
+
+            # 4. Calculate the split index
+            split_idx = int(len(all_img_ids) * self.train_ratio)
+
+            # 5. Select IDs based on the requested split
+            if self.split == 'train':
+                selected_ids = all_img_ids[:split_idx]
+            elif self.split == 'test' or self.split == 'val':
+                selected_ids = all_img_ids[split_idx:]
+            else:
+                raise ValueError(f"Invalid split name: {self.split}. Use 'train' or 'test'.")
+
             obj_folder = f"{obj_id:02d}"
             obj_path = self.data_dir / obj_folder
 
-            split_file = obj_path / f"{self.split}.txt"
-
-            if not split_file.exists():
-                print(f"Warning: Split file {split_file} does not exist.")
-                continue
-
-            with open(split_file, 'r') as f:
-                img_ids = [int(line.strip()) for line in f.readlines()]  # Image IDs for this split
-
-            # Ground truth information (including poses)
-            gt_file = obj_path / "gt.yml"
-            with open(gt_file, 'r') as f:
-                gt_data = yaml.safe_load(f)
-
-            # Camera intrinsics file
-            info_file = obj_path / "info.yml"
-            with open(info_file, 'r') as f:
-                info_data = yaml.safe_load(f)
-
             # Load samples
-            for img_id in img_ids:
+            for img_id in selected_ids:
                 img_id = int(img_id)
                 if img_id not in gt_data:
                     continue  # Skip if no GT data for this image
@@ -110,7 +130,6 @@ class LineModPoseDataset(Dataset):
                     quaternion_rotation = convert_rotation_to_quaternion(rotation_matrix)
 
                     x, y, w, h = map(int, ann['obj_bb'])
-                    bbox = [x, y, w, h]
 
                     #validate bbox
                     
