@@ -552,7 +552,6 @@ def create_student_dataset_final(dest_root, model_path, train_files_list, collag
     print(f"📋 Processing {len(train_files_list)} real training images...")
     
     for img_path in tqdm(train_files_list, desc="Pseudo-Labeling"):
-        img_path = img_path['src']
         if not os.path.exists(img_path): continue
         
         fname = os.path.basename(img_path)
