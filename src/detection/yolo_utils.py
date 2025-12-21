@@ -270,7 +270,8 @@ def visualize_bbox(image_path):
     plt.axis('off')
     plt.title(f"Visualization: {os.path.basename(image_path)}")
     plt.show()
-def generate_synthetic_dataset(source_root, dest_root, bg_cache_dir, num_collages, max_objects_images):
+
+def create_teacher_dataset_final(source_root, dest_root, bg_cache_dir, num_collages=2000, max_objects_images=4):
     # Object IDs and class mapping (excluding objects 3 and 7)
     valid_obj_ids = [1, 2, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15]
     id_map = {obj_id: i for i, obj_id in enumerate(valid_obj_ids)}
@@ -407,7 +408,7 @@ def generate_synthetic_dataset(source_root, dest_root, bg_cache_dir, num_collage
         else:
             # Other Classes: Cache images/masks for collage generation
             # Limit to 50 samples to prevent memory overflow, but randomly selected from the 80% split
-            collage_samples = random.sample(train_subset, min(len(train_subset), 50))
+            collage_samples = train_subset
             
             for img_data in collage_samples:
                 if os.path.exists(img_data['mask']):
@@ -498,151 +499,163 @@ def generate_synthetic_dataset(source_root, dest_root, bg_cache_dir, num_collage
     # Note: We point 'val' to 'test' so training scripts have a validation set to use
     with open('./linemod.yaml', 'w') as f:
         f.write(f"path: {dest_root}\ntrain: images/train\nval: images/test\ntest: images/test\nnc: {len(class_names)}\nnames: {class_names}")
-def auto_labeled_dataset(dest_root, model_path, source_root, conf_threshold, iou_threshold):
-    valid_obj_ids = [1, 2, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15]
-    id_map = {obj_id: i for i, obj_id in enumerate(valid_obj_ids)}
-    obj_folders = [f"{i:02d}" for i in valid_obj_ids]
+        
+    return train_subset, test_subset
 
-    # --- SETUP DIRECTORIES ---
+def create_student_dataset_final(dest_root, model_path, train_files_list, collage_root, conf_threshold=0.8, iou_threshold=0.45):
+    """
+    Step 3: Creates the Final Student Dataset.
+    
+    1. Iterates through the list of REAL training files (provided by Step 1).
+    2. Adds Teacher's Pseudo-Labels (avoiding duplicates with Ground Truth).
+    3. Merges the SYNTHETIC collages (from Step 2).
+    """
+
+    # --- 1. SETUP DIRECTORIES ---
+    print(f"\n🚀 STEP 3: Creating Student Dataset in: {dest_root}")
     if os.path.exists(dest_root): shutil.rmtree(dest_root)
-    # Create 'train' and 'test' directories (80/20 split)
-    for split in ['train', 'test']:
-        for dtype in ['images', 'labels']:
-            os.makedirs(os.path.join(dest_root, dtype, split), exist_ok=True)
+    
+    # We only create the train folder here (validation uses the original real test set)
+    dest_img_dir = os.path.join(dest_root, 'images', 'train')
+    dest_lbl_dir = os.path.join(dest_root, 'labels', 'train')
+    os.makedirs(dest_img_dir, exist_ok=True)
+    os.makedirs(dest_lbl_dir, exist_ok=True)
 
-    print(f"🧠 Loading model: {model_path}")
+    print(f"🧠 Loading Teacher Model: {model_path}")
     model = YOLO(model_path)
-
-    # --- HELPER FUNCTIONS ---
-    def convert_box_gt_to_yolo(size, box):
-        """Convert bounding box from pixel coordinates [x, y, w, h] to YOLO format [xc, yc, w, h] normalized"""
-        dw, dh = 1. / size[0], 1. / size[1]
-        xc = (box[0] + box[2] / 2.0) * dw
-        yc = (box[1] + box[3] / 2.0) * dh
-        w = box[2] * dw
-        h = box[3] * dh
-        return [xc, yc, w, h]
-
-    def compute_iou_yolo(box1, box2):
-        """Calculate IoU between two boxes in YOLO format [xc, yc, w, h]"""
-        def to_corners(b):
-            return [b[0]-b[2]/2, b[1]-b[3]/2, b[0]+b[2]/2, b[1]+b[3]/2]
+    
+    # --- HELPER: IoU Calculation ---
+    def compute_iou(box1, box2):
+        # box format: [xc, yc, w, h]
+        b1_x1, b1_y1 = box1[0]-box1[2]/2, box1[1]-box1[3]/2
+        b1_x2, b1_y2 = box1[0]+box1[2]/2, box1[1]+box1[3]/2
+        b2_x1, b2_y1 = box2[0]-box2[2]/2, box2[1]-box2[3]/2
+        b2_x2, b2_y2 = box2[0]+box2[2]/2, box2[1]+box2[3]/2
         
-        b1 = to_corners(box1)
-        b2 = to_corners(box2)
-        
-        inter_x1 = max(b1[0], b2[0])
-        inter_y1 = max(b1[1], b2[1])
-        inter_x2 = min(b1[2], b2[2])
-        inter_y2 = min(b1[3], b2[3])
+        inter_x1 = max(b1_x1, b2_x1)
+        inter_y1 = max(b1_y1, b2_y1)
+        inter_x2 = min(b1_x2, b2_x2)
+        inter_y2 = min(b1_y2, b2_y2)
         
         inter_area = max(0, inter_x2 - inter_x1) * max(0, inter_y2 - inter_y1)
-        b1_area = (b1[2]-b1[0]) * (b1[3]-b1[1])
-        b2_area = (b2[2]-b2[0]) * (b2[3]-b2[1])
+        b1_area = (b1_x2 - b1_x1) * (b1_y2 - b1_y1)
+        b2_area = (b2_x2 - b2_x1) * (b2_y2 - b2_y1)
         
         union = b1_area + b2_area - inter_area
         return inter_area / union if union > 0 else 0
 
-    # --- MAIN LOOP ---
-    print("🚀 Starting auto-labeling process with 80/20 split...")
-    total_added = 0
-    stats = {'train': 0, 'test': 0}
+    stats = {'real': 0, 'pseudo': 0, 'collage': 0}
 
-    for folder_str in obj_folders:
-        folder_int = int(folder_str)
-        base_dir = os.path.join(source_root, folder_str)
-        rgb_dir = os.path.join(base_dir, 'rgb')
-        gt_path = os.path.join(base_dir, 'gt.yml')
+    # =========================================================
+    # PART A: PROCESS REAL DATA (From the provided list)
+    # =========================================================
+    print(f"📋 Processing {len(train_files_list)} real training images...")
+    
+    for img_path in tqdm(train_files_list, desc="Pseudo-Labeling"):
+        if not os.path.exists(img_path): continue
         
-        if not os.path.exists(gt_path): continue
+        fname = os.path.basename(img_path)
         
-        # 1. Load all Ground Truth Data
-        with open(gt_path, 'r') as f: gt_data = yaml.safe_load(f)
-        all_img_ids = list(gt_data.keys())
+        # 1. Find the original label file (created in Step 1)
+        # Assumes structure: .../dataset_real/images/train/file.png -> .../dataset_real/labels/train/file.txt
+        lbl_path = img_path.replace('images', 'labels').replace('.png', '.txt')
         
-        # 2. Shuffle and Split (80% Train, 20% Test)
-        random.shuffle(all_img_ids)
-        split_idx = int(len(all_img_ids) * 0.80)
+        img = cv2.imread(img_path)
+        if img is None: continue
+
+        # 2. Load existing Ground Truth (GT) Labels
+        curr_labels = []     # List of strings for the final file
+        gt_boxes = []        # List [cls, xc, yc, w, h] for IoU checks
         
-        train_ids = set(all_img_ids[:split_idx])
-        test_ids = set(all_img_ids[split_idx:])
+        if os.path.exists(lbl_path):
+            with open(lbl_path, 'r') as f:
+                lines = f.readlines()
+                for l in lines:
+                    curr_labels.append(l.strip()) # Keep original label
+                    parts = list(map(float, l.strip().split()))
+                    if len(parts) == 5:
+                        gt_boxes.append(parts) 
+
+        # 3. Run Teacher (Pseudo-Labeling)
+        # Skip target object (e.g., folder 02 - benchvise) if necessary
+        is_target_object = "real_02_" in fname 
         
-        for img_key in tqdm(all_img_ids, desc=f"Processing Folder {folder_str}"):
-            img_key_str = str(img_key)
-            fname = f"{img_key:04d}.png"
-            src_img_path = os.path.join(rgb_dir, fname)
+        if not is_target_object:
+            results = model.predict(img, conf=conf_threshold, verbose=False, iou=0.45)
             
-            if not os.path.exists(src_img_path): continue
-            
-            # Determine subset
-            if img_key in train_ids:
-                subset = 'train'
-                stats['train'] += 1
-            else:
-                subset = 'test'
-                stats['test'] += 1
-                
-            img = cv2.imread(src_img_path)
-            h_img, w_img = img.shape[:2]
-            
-            # Collect Ground Truth Labels
-            final_labels = [] 
-            gt_boxes_yolo = [] 
-            
-            annotations = gt_data.get(img_key, [])
-            for ann in annotations:
-                obj_id = int(ann['obj_id'])
-                if obj_id in id_map:
-                    cls_id = id_map[obj_id]
-                    bbox_yolo = convert_box_gt_to_yolo((w_img, h_img), ann['obj_bb'])
+            for r in results:
+                for box in r.boxes:
+                    p_cls = int(box.cls[0])
+                    p_box = box.xywhn[0].tolist() # [xc, yc, w, h]
                     
-                    gt_boxes_yolo.append([cls_id] + bbox_yolo)
-                    final_labels.append(f"{cls_id} {bbox_yolo[0]:.6f} {bbox_yolo[1]:.6f} {bbox_yolo[2]:.6f} {bbox_yolo[3]:.6f}")
-            
-            # --- AUTO-LABELING LOGIC ---
-            # 1. Only run on TRAINING data (Test data must remain Ground Truth only)
-            # 2. Skip Folder 02 (Benchvise) completely for auto-labeling as requested previously
-            if subset == 'train' and folder_int != 2:
-                results = model.predict(img, conf=conf_threshold, verbose=False, iou=0.4)
+                    # Duplicate Check: If predicted box overlaps with existing GT, ignore it
+                    is_dup = False
+                    for gt in gt_boxes:
+                        # If same class AND high overlap -> duplicate
+                        if int(gt[0]) == p_cls and compute_iou(p_box, gt[1:]) > iou_threshold:
+                            is_dup = True
+                            break
+                    
+                    # If it's new information, add it!
+                    if not is_dup:
+                        curr_labels.append(f"{p_cls} {p_box[0]:.6f} {p_box[1]:.6f} {p_box[2]:.6f} {p_box[3]:.6f}")
+                        stats['pseudo'] += 1
+        
+            # 4. Save to Student Folder
+            # Copy image only if isn't 02 because those are already copied in Step 1
+            shutil.copy(img_path, os.path.join(dest_img_dir, fname))
+            # Write new label file (GT + Pseudo)
+            with open(os.path.join(dest_lbl_dir, fname.replace('.png','.txt')), 'w') as f:
+                f.write('\n'.join(curr_labels))
                 
-                for r in results:
-                    for box in r.boxes:
-                        p_cls = int(box.cls[0])
-                        p_xywh = box.xywhn[0].tolist()
-                        
-                        # Check against Ground Truth to avoid duplicates
-                        is_duplicate = False
-                        for gt_b in gt_boxes_yolo:
-                            gt_cls = gt_b[0]
-                            gt_geom = gt_b[1:]
-                            
-                            if p_cls == gt_cls:
-                                iou = compute_iou_yolo(p_xywh, gt_geom)
-                                if iou > iou_threshold:
-                                    is_duplicate = True
-                                    break
-                        
-                        # Add new label if unique
-                        if not is_duplicate:
-                            final_labels.append(f"{p_cls} {p_xywh[0]:.6f} {p_xywh[1]:.6f} {p_xywh[2]:.6f} {p_xywh[3]:.6f}")
-                            total_added += 1
+            stats['real'] += 1
 
-            # Save image and labels
-            dst_fname = f"{folder_str}_{fname}"
-            cv2.imwrite(os.path.join(dest_root, 'images', subset, dst_fname), img)
+    # =========================================================
+    # PART B: MERGE SYNTHETIC COLLAGES
+    # =========================================================
+    print("🎨 Merging Synthetic Collages...")
+    src_synth_img = os.path.join(collage_root, 'images', 'train')
+    src_synth_lbl = os.path.join(collage_root, 'labels', 'train')
+    
+    if os.path.exists(src_synth_img):
+        synth_files = [f for f in os.listdir(src_synth_img) if f.endswith('.jpg') or f.endswith('.png')]
+        
+        for fname in tqdm(synth_files, desc="Copying Collages"):
+            # Copy Image
+            shutil.copy(os.path.join(src_synth_img, fname), os.path.join(dest_img_dir, fname))
             
-            if final_labels:
-                with open(os.path.join(dest_root, 'labels', subset, dst_fname.replace('.png', '.txt')), 'w') as f:
-                    f.write('\n'.join(final_labels))
+            # Copy Label
+            lbl_name = fname.replace('.jpg', '.txt').replace('.png', '.txt')
+            if os.path.exists(os.path.join(src_synth_lbl, lbl_name)):
+                shutil.copy(os.path.join(src_synth_lbl, lbl_name), os.path.join(dest_lbl_dir, lbl_name))
+            
+            stats['collage'] += 1
+    else:
+        print("⚠️ Warning: Collage folder not found or empty.")
 
-    print(f"\n✅ Dataset generated successfully!")
-    print(f"   [TRAIN] Images processed: {stats['train']}")
-    print(f"   [TEST]  Images processed: {stats['test']}")
-    print(f"   ➕ Extra labels added automatically (Train only): {total_added}")
-    print(f"   📁 Saved to: {dest_root}")
+    # =========================================================
+    # PART C: YAML CREATION
+    # =========================================================
+    # Trick: Use the 'test' folder from the REAL dataset (Step 1) for actual validation!
+    # We infer the path relative to the first train image
+    real_test_path = os.path.abspath(os.path.join(train_files_list[0], "../../..", "test"))
+    
+    class_names = ['ape', 'benchvise', 'camera', 'can', 'cat', 'driller', 'duck', 'eggbox', 'glue', 'holepuncher', 'iron', 'lamp', 'phone']
+    
+    yaml_content = f"""
+path: {dest_root}
+train: images/train
+val: {real_test_path}  # Points to the ORIGINAL Real Test Set!
+test: {real_test_path}
+nc: {len(class_names)}
+names: {class_names}
+"""
+    with open(os.path.join(dest_root, 'student.yaml'), 'w') as f:
+        f.write(yaml_content)
 
-    # Create YAML configuration
-    # Note: 'val' points to 'test' so training scripts have a valid validation path
-    names = ['ape', 'benchvise', 'camera', 'can', 'cat', 'driller', 'duck', 'eggbox', 'glue', 'holepuncher', 'iron', 'lamp', 'phone']
-    with open(os.path.join(dest_root, 'data.yaml'), 'w') as f:
-        f.write(f"path: {dest_root}\ntrain: images/train\nval: images/test\ntest: images/test\nnc: 13\nnames: {names}")
+    print(f"\n✅ Student Dataset Completed!")
+    print(f"   📂 Path: {dest_root}")
+    print(f"   🖼️  Real Processed: {stats['real']}")
+    print(f"   🤖 Pseudo-Labels Added: {stats['pseudo']}")
+    print(f"   🎨 Collages Merged: {stats['collage']}")
+    print(f"   📄 Config saved to: student.yaml")
