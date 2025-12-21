@@ -60,7 +60,7 @@ def root_dataset_path():
     return DATASET_PATH
 
 
-def load_model(model_points_path: str, map_location: str) -> dict:
+def load_model(model_points_path: str, map_location: str, model_key: str = 'model_state_dict') -> dict:
     """
     Loads model points from a .pth file.
 
@@ -75,7 +75,7 @@ def load_model(model_points_path: str, map_location: str) -> dict:
 
     model_points_data = torch.load(model_points_path, map_location=map_location)
 
-    state_dict = model_points_data.get('model_state_dict', model_points_data)
+    state_dict = model_points_data.get(model_key, model_points_data)
 
     new_state_dict = OrderedDict()
 
@@ -83,7 +83,7 @@ def load_model(model_points_path: str, map_location: str) -> dict:
         new_key = key.replace('module.', '')  # Remove 'module.' prefix if present
         new_state_dict[new_key] = value
 
-    model_points_data['model_state_dict'] = new_state_dict
+    model_points_data[model_key] = new_state_dict
     return model_points_data
     
 
