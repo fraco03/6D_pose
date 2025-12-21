@@ -502,20 +502,16 @@ def create_teacher_dataset_final(source_root, dest_root, bg_cache_dir, num_colla
         
     return train_subset, test_subset
 
-def create_student_dataset_final(dest_root, model_path, train_files_list, collage_root, conf_threshold=0.8, iou_threshold=0.45):
+def create_student_dataset_final(dest_root, model_path, train_data_input, collage_root, conf_threshold=0.8, iou_threshold=0.45):
     """
     Step 3: Creates the Final Student Dataset.
-    
-    1. Iterates through the list of REAL training files (provided by Step 1).
-    2. Adds Teacher's Pseudo-Labels (avoiding duplicates with Ground Truth).
-    3. Merges the SYNTHETIC collages (from Step 2).
+    FIXED: optimized for dictionary input (from Step 1) and fixed YAML generation.
     """
 
     # --- 1. SETUP DIRECTORIES ---
     print(f"\n🚀 STEP 3: Creating Student Dataset in: {dest_root}")
     if os.path.exists(dest_root): shutil.rmtree(dest_root)
     
-    # We only create the train folder here (validation uses the original real test set)
     dest_img_dir = os.path.join(dest_root, 'images', 'train')
     dest_lbl_dir = os.path.join(dest_root, 'labels', 'train')
     os.makedirs(dest_img_dir, exist_ok=True)
@@ -526,17 +522,13 @@ def create_student_dataset_final(dest_root, model_path, train_files_list, collag
     
     # --- HELPER: IoU Calculation ---
     def compute_iou(box1, box2):
-        # box format: [xc, yc, w, h]
         b1_x1, b1_y1 = box1[0]-box1[2]/2, box1[1]-box1[3]/2
         b1_x2, b1_y2 = box1[0]+box1[2]/2, box1[1]+box1[3]/2
         b2_x1, b2_y1 = box2[0]-box2[2]/2, box2[1]-box2[3]/2
         b2_x2, b2_y2 = box2[0]+box2[2]/2, box2[1]+box2[3]/2
         
-        inter_x1 = max(b1_x1, b2_x1)
-        inter_y1 = max(b1_y1, b2_y1)
-        inter_x2 = min(b1_x2, b2_x2)
-        inter_y2 = min(b1_y2, b2_y2)
-        
+        inter_x1, inter_y1 = max(b1_x1, b2_x1), max(b1_y1, b2_y1)
+        inter_x2, inter_y2 = min(b1_x2, b2_x2), min(b1_y2, b2_y2)
         inter_area = max(0, inter_x2 - inter_x1) * max(0, inter_y2 - inter_y1)
         b1_area = (b1_x2 - b1_x1) * (b1_y2 - b1_y1)
         b2_area = (b2_x2 - b2_x1) * (b2_y2 - b2_y1)
@@ -547,69 +539,79 @@ def create_student_dataset_final(dest_root, model_path, train_files_list, collag
     stats = {'real': 0, 'pseudo': 0, 'collage': 0}
 
     # =========================================================
-    # PART A: PROCESS REAL DATA (From the provided list)
+    # PART A: PROCESS REAL DATA (Optimized for Dictionary Input)
     # =========================================================
-    print(f"📋 Processing {len(train_files_list)} real training images...")
+    print(f"📋 Processing {len(train_data_input)} real training elements...")
     
-    for img_path in tqdm(train_files_list, desc="Pseudo-Labeling"):
-        img_path = img_path['src']
-        if not os.path.exists(img_path): continue
+    for item in tqdm(train_data_input, desc="Pseudo-Labeling"):
         
-        fname = os.path.basename(img_path)
-        
-        # 1. Find the original label file (created in Step 1)
-        # Assumes structure: .../dataset_real/images/train/file.png -> .../dataset_real/labels/train/file.txt
-        lbl_path = img_path.replace('images', 'labels').replace('.png', '.txt')
-        
-        img = cv2.imread(img_path)
+        # 1. EXTRACT DATA FROM DICTIONARY
+        # We assume input is the 'train_subset' list of dicts from Step 1
+        if isinstance(item, dict):
+            src_path = item['src']
+            # Get labels directly from memory (faster/safer)
+            curr_labels = list(item['labels']) 
+            
+            # Reconstruct unique filename
+            # e.g., path .../01/rgb/0000.png -> folder="01"
+            folder_str = os.path.basename(os.path.dirname(os.path.dirname(src_path)))
+            fname = f"real_{folder_str}_{item['fname']}"
+        else:
+            # Fallback for strings (just in case)
+            src_path = item
+            if not os.path.exists(src_path): continue
+            fname = os.path.basename(src_path)
+            
+            # Read labels from disk
+            lbl_path = src_path.replace('images', 'labels').replace('.png', '.txt')
+            curr_labels = []
+            if os.path.exists(lbl_path):
+                with open(lbl_path, 'r') as f:
+                    curr_labels = [line.strip() for line in f.readlines()]
+
+        # 2. LOAD IMAGE
+        img = cv2.imread(src_path)
         if img is None: continue
 
-        # 2. Load existing Ground Truth (GT) Labels
-        curr_labels = []     # List of strings for the final file
-        gt_boxes = []        # List [cls, xc, yc, w, h] for IoU checks
-        
-        if os.path.exists(lbl_path):
-            with open(lbl_path, 'r') as f:
-                lines = f.readlines()
-                for l in lines:
-                    curr_labels.append(l.strip()) # Keep original label
-                    parts = list(map(float, l.strip().split()))
-                    if len(parts) == 5:
-                        gt_boxes.append(parts) 
+        # 3. PARSE GT BOXES (For duplicate checking)
+        gt_boxes = [] 
+        for l in curr_labels:
+            try:
+                parts = list(map(float, l.split()))
+                if len(parts) == 5:
+                    gt_boxes.append(parts) # [cls, xc, yc, w, h]
+            except: pass
 
-        # 3. Run Teacher (Pseudo-Labeling)
-        # Skip target object (e.g., folder 02 - benchvise) if necessary
-        is_target_object = "real_02_" in fname 
+        # 4. RUN TEACHER (Pseudo-Labeling)
+        # Skip target object folders (like Benchvise 02) to keep GT pure
+        is_target_folder = "_02_" in fname or "/02/" in src_path
         
-        if not is_target_object:
+        if not is_target_folder:
             results = model.predict(img, conf=conf_threshold, verbose=False, iou=0.45)
             
             for r in results:
                 for box in r.boxes:
                     p_cls = int(box.cls[0])
-                    p_box = box.xywhn[0].tolist() # [xc, yc, w, h]
+                    p_box = box.xywhn[0].tolist()
                     
-                    # Duplicate Check: If predicted box overlaps with existing GT, ignore it
+                    # Duplicate Check
                     is_dup = False
                     for gt in gt_boxes:
-                        # If same class AND high overlap -> duplicate
                         if int(gt[0]) == p_cls and compute_iou(p_box, gt[1:]) > iou_threshold:
                             is_dup = True
                             break
                     
-                    # If it's new information, add it!
+                    # Add new label if unique
                     if not is_dup:
                         curr_labels.append(f"{p_cls} {p_box[0]:.6f} {p_box[1]:.6f} {p_box[2]:.6f} {p_box[3]:.6f}")
                         stats['pseudo'] += 1
         
-            # 4. Save to Student Folder
-            # Copy image only if isn't 02 because those are already copied in Step 1
-            shutil.copy(img_path, os.path.join(dest_img_dir, fname))
-            # Write new label file (GT + Pseudo)
-            with open(os.path.join(dest_lbl_dir, fname.replace('.png','.txt')), 'w') as f:
-                f.write('\n'.join(curr_labels))
-                
-            stats['real'] += 1
+        # 5. SAVE TO DISK
+        cv2.imwrite(os.path.join(dest_img_dir, fname), img)
+        with open(os.path.join(dest_lbl_dir, fname.replace('.png','.txt')), 'w') as f:
+            f.write('\n'.join(curr_labels))
+            
+        stats['real'] += 1
 
     # =========================================================
     # PART B: MERGE SYNTHETIC COLLAGES
@@ -620,33 +622,26 @@ def create_student_dataset_final(dest_root, model_path, train_files_list, collag
     
     if os.path.exists(src_synth_img):
         synth_files = [f for f in os.listdir(src_synth_img) if f.endswith('.jpg') or f.endswith('.png')]
-        
-        for fname in tqdm(synth_files, desc="Copying Collages"):
-            # Copy Image
-            shutil.copy(os.path.join(src_synth_img, fname), os.path.join(dest_img_dir, fname))
-            
-            # Copy Label
-            lbl_name = fname.replace('.jpg', '.txt').replace('.png', '.txt')
+        for fn in tqdm(synth_files, desc="Copying Collages"):
+            shutil.copy(os.path.join(src_synth_img, fn), os.path.join(dest_img_dir, fn))
+            lbl_name = fn.replace('.jpg', '.txt').replace('.png', '.txt')
             if os.path.exists(os.path.join(src_synth_lbl, lbl_name)):
                 shutil.copy(os.path.join(src_synth_lbl, lbl_name), os.path.join(dest_lbl_dir, lbl_name))
-            
             stats['collage'] += 1
-    else:
-        print("⚠️ Warning: Collage folder not found or empty.")
 
     # =========================================================
-    # PART C: YAML CREATION
+    # PART C: YAML CREATION (FIXED)
     # =========================================================
-    # Trick: Use the 'test' folder from the REAL dataset (Step 1) for actual validation!
-    # We infer the path relative to the first train image
-    real_test_path = os.path.abspath(os.path.join(train_files_list[0], "../../..", "test"))
+    # FIX: Use the standard path for the real dataset validation set.
+    # This avoids crashes when trying to read paths from the dictionary.
+    real_test_path = "/kaggle/working/datasets/images/test"
     
     class_names = ['ape', 'benchvise', 'camera', 'can', 'cat', 'driller', 'duck', 'eggbox', 'glue', 'holepuncher', 'iron', 'lamp', 'phone']
     
     yaml_content = f"""
 path: {dest_root}
 train: images/train
-val: {real_test_path}  # Points to the ORIGINAL Real Test Set!
+val: {real_test_path}
 test: {real_test_path}
 nc: {len(class_names)}
 names: {class_names}
@@ -655,8 +650,7 @@ names: {class_names}
         f.write(yaml_content)
 
     print(f"\n✅ Student Dataset Completed!")
-    print(f"   📂 Path: {dest_root}")
     print(f"   🖼️  Real Processed: {stats['real']}")
     print(f"   🤖 Pseudo-Labels Added: {stats['pseudo']}")
     print(f"   🎨 Collages Merged: {stats['collage']}")
-    print(f"   📄 Config saved to: student.yaml")
+    print(f"   📄 Config: {os.path.join(dest_root, 'student.yaml')}")
