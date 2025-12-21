@@ -97,35 +97,44 @@ class MultiObjectPointMatchingLoss(nn.Module):
 class TranslationLoss(nn.Module):
     """
     Loss function specialized for 3D Translation Regression.
-    
-    It predicts a vector of 3 values: [delta_x, delta_y, z].
-    Uses Smooth L1 Loss (Huber Loss) to be robust against outliers 
-    in pixel offsets or depth estimation.
+    Handles the scale difference between Pixel offsets (XY) and Depth (Z).
     """
-    def __init__(self, beta=1.0):
+    def __init__(self, beta=1.0, z_weight=10.0):
         """
         Args:
-            beta (float): Threshold for SmoothL1. 
-                          If error < beta, it uses squared loss (L2).
-                          If error >= beta, it uses linear loss (L1).
+            beta (float): Threshold for SmoothL1.
+            z_weight (float): Multiplier for the depth loss to balance it with pixel loss.
+                              Since Z is in meters (small numbers like 0.5) and XY are often 
+                              in pixels or larger scales, we boost Z's importance.
         """
         super(TranslationLoss, self).__init__()
         self.loss_fn = nn.SmoothL1Loss(reduction='mean', beta=beta)
+        self.z_weight = z_weight
 
     def forward(self, pred_trans, gt_trans):
         """
         Args:
-            pred_trans (torch.Tensor): Predicted vector [dx, dy, z]. Shape (Batch, 3).
-            gt_trans (torch.Tensor): Target vector [dx, dy, z]. Shape (Batch, 3).
-                                     (Must be calculated from GT absolute translation).
-        
-        Returns:
-            torch.Tensor: Scalar loss value.
+            pred_trans: [Batch, 3] -> (dx, dy, z)
+            gt_trans:   [Batch, 3] -> (dx, dy, z)
         """
-        # Simply compute the regression error
-        loss = self.loss_fn(pred_trans, gt_trans)
+        # Separiamo le componenti
+        pred_xy = pred_trans[:, :2] # Solo dx, dy
+        pred_z  = pred_trans[:, 2]  # Solo z
         
-        return loss
+        gt_xy = gt_trans[:, :2]
+        gt_z  = gt_trans[:, 2]
+        
+        # 1. Calcola Loss XY (Pixel offsets)
+        loss_xy = self.loss_fn(pred_xy, gt_xy)
+        
+        # 2. Calcola Loss Z (Depth in meters)
+        loss_z = self.loss_fn(pred_z, gt_z)
+        
+        # 3. Somma Pesata
+        # Moltiplichiamo loss_z per dare priorità alla profondità
+        total_loss = loss_xy + (self.z_weight * loss_z)
+        
+        return total_loss
     
 class CombinedPoseLoss(nn.Module):
     """
