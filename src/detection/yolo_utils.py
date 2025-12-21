@@ -553,33 +553,42 @@ def create_student_dataset_final(dest_root, model_path, train_files_list, collag
     
     for item in tqdm(train_files_list, desc="Pseudo-Labeling"):
         
-        # --- GESTIONE INPUT (Dizionario o Stringa) ---
+        # --- INPUT HANDLING (Dict or String) ---
+        # We perform extraction BEFORE checking if the file exists on disk
+        # to avoid passing a dictionary to os.path.exists()
+        
         if isinstance(item, dict):
-            # CASO A: Input è il dizionario 'train_subset' (più veloce)
+            # CASE A: Input is the dictionary 'train_subset'
             src_path = item['src']
             
-            # Ricostruiamo il nome file corretto (es: real_01_0000.png)
-            # Dalla struttura: .../01/rgb/0000.png -> estraiamo '01'
+            # Reconstruct filename (e.g., real_01_0000.png)
+            # From: .../01/rgb/0000.png -> extract '01'
             folder_str = os.path.basename(os.path.dirname(os.path.dirname(src_path)))
             fname = f"real_{folder_str}_{item['fname']}"
             
-            # Le label le abbiamo già in memoria, non serve leggere file!
+            # Labels are already in memory
             curr_labels = item['labels']
             
         else:
-            # CASO B: Input è una lista di percorsi file (fallback)
+            # CASE B: Input is a string path (fallback)
             src_path = item
+            
+            # SAFE to check existence here because src_path is a string
             if not os.path.exists(src_path): continue
+            
             fname = os.path.basename(src_path)
             
-            # Leggi label dal disco
+            # Read labels from disk
             lbl_path = src_path.replace('images', 'labels').replace('.png', '.txt')
             curr_labels = []
             if os.path.exists(lbl_path):
                 with open(lbl_path, 'r') as f:
                     curr_labels = [line.strip() for line in f.readlines()]
 
-        # Carica l'immagine
+        # --- LOAD IMAGE ---
+        # Now src_path is definitely a string, so this check is safe
+        if not os.path.exists(src_path): continue
+
         img = cv2.imread(src_path)
         if img is None: continue
 
