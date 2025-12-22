@@ -343,6 +343,7 @@ def get_image(image_path: str):
 
 import random
 import matplotlib.pyplot as plt
+import math
 
 def get_image_from_sample(sample: dict):
     """
@@ -357,14 +358,29 @@ def get_image_from_sample(sample: dict):
     img_path = path.join(root_dir, "data", f"{sample['object_id']:02d}", "rgb", f"{sample['img_id']:04d}.png")
     return get_image(img_path)
 
-def visualize_random_samples(model, dataset, device, inference_func, num_samples=5):
+def visualize_random_samples(model, dataset, device, inference_func, gt_func, num_samples=5, model_name='model'):
     samples = random.sample(range(len(dataset)), num_samples)
 
     batch = [dataset[i] for i in samples]
-    
+
+    if isinstance(model, tuple):
+        for m in model:
+            m.eval()
+    else:
+        model.eval()
+
     pred_rotations, pred_translations = inference_func(model, device, batch)
     pred_rotations = pred_rotations.cpu().numpy()
     pred_translations = pred_translations.cpu().numpy()
+
+    gt_rotations, gt_translations = gt_func(device, batch)
+    gt_rotations = gt_rotations.cpu().numpy()
+    gt_translations = gt_translations.cpu().numpy()
+
+    ncols = min(num_samples, 3)
+    nrows = math.ceil(num_samples / ncols)
+
+    fig, axes = plt.subplots(nrows, ncols, figsize=(15, 5), dpi=120, constrained_layout=True)
 
     # Batch num_samples images
     for i, idx in enumerate(samples):
@@ -376,16 +392,17 @@ def visualize_random_samples(model, dataset, device, inference_func, num_samples
             image_rgb,
             object_id=batch[i]['object_id'],
             cam_K=batch[i]['cam_K'].numpy(),
-            gt_rotation=batch[i]['rotation'].numpy(),
-            gt_translation=batch[i]['translation'].numpy(),
+            gt_rotation=gt_rotations[i],
+            gt_translation=gt_translations[i],
             pred_rotation=pred_rotations[i],
-            pred_translation=batch[i]['3D_center'].numpy()
+            pred_translation=pred_translations[i]
         )
 
         img_vis_rgb = img_vis
-        plt.subplot(1, num_samples, i+1)
-        plt.imshow(img_vis_rgb)
-        plt.axis('off')
-        plt.title(f"Sample {idx}", fontsize=10)
-    plt.tight_layout()
+        ax = axes[i]
+
+        ax.imshow(img_vis_rgb)
+        ax.axis('off')
+        ax.set_title(f"Sample {idx}", fontsize=10)
+    fig.suptitle(f"Pose Estimation - {model_name}")
     plt.show()

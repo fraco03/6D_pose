@@ -94,9 +94,3 @@ def load_model(checkpoint_location: str, device: str, model_class, model_key: st
     model.load_state_dict(model_data[model_key])
     model.to(device)
     return model
-
-
-    
-
-
-    

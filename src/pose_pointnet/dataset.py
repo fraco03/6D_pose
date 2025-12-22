@@ -32,7 +32,8 @@ class PointNetLineModDataset(Dataset):
         num_points: int = 1024,  # Fixed number of points required by PointNet
         object_ids: Optional[List[int]] = None,
         train_ratio: float = 0.8,
-        random_seed: int = 42
+        random_seed: int = 42,
+        verbose: bool = True
     ):
         self.root_dir = Path(root_dir)
         self.data_dir = self.root_dir / 'data'
@@ -53,10 +54,11 @@ class PointNetLineModDataset(Dataset):
         # Build the dataset index
         self.samples = self._build_index()
 
-        print(f"✅ Loaded PointNetLineModDataset")
-        print(f"   Split: {self.split} (Ratio: {self.train_ratio})")
-        print(f"   Num Points: {self.num_points}")
-        print(f"   Total samples: {len(self.samples)}")
+        if verbose:
+            print(f"✅ Loaded PointNetLineModDataset")
+            print(f"   Split: {self.split} (Ratio: {self.train_ratio})")
+            print(f"   Num Points: {self.num_points}")
+            print(f"   Total samples: {len(self.samples)}")
 
     def _build_index(self) -> List[Dict]:
         """
@@ -241,7 +243,8 @@ class PointNetLineModDataset(Dataset):
             # Helper for visualization later
             'class_idx': self.id_to_class.get(sample['object_id'], 'unknown') ,
             'img_id': sample['img_id'],
-            'cam_K': torch.from_numpy(cam_K).float()
+            'cam_K': torch.from_numpy(cam_K).float(),
+            'img_path': self.get_image_path(idx)
         }
     
     def get_image_path(self, idx: int):

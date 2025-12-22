@@ -56,7 +56,7 @@ class LineModConfig:
         self._split_cache: Dict[tuple, list] = {}  # Split files (obj_id, split) -> img_ids
         
         self._initialized = True
-        print(f"✅ LineModConfig initialized: {self.dataset_root}")
+        # print(f"✅ LineModConfig initialized: {self.dataset_root}")
     
     def _load_models_info(self) -> dict:
         """Load models_info.yml"""

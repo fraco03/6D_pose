@@ -2,23 +2,25 @@ from pandas import DataFrame
 
 from src.model_evaluation import evalutation_pipeline
 from utils.linemod_config import get_linemod_config
-from utils.load_data import load_model_data
+from utils.load_data import load_model_data, load_model
 from src.pose_rgb.model import ResNetRotation, TranslationNet
 from torch.utils.data import DataLoader
 from src.pose_rgb.dataset import LineModPoseDataset
 import torch
+from src.pose_rgb.pose_utils import inverse_pinhole_projection
 
 
 def evaluate_RGB(
-        model_path: str,
+        rot_model_path: str,
+        trans_model_path: str,
         dataset_root: str,
         output_path: str
 ) -> DataFrame:
-    MODEL_PATH = model_path
+    ROT_MODEL_PATH = rot_model_path
+    TRANS_MODEL_PATH = trans_model_path
     DATASET_ROOT = dataset_root
     OUTPUT_PATH = output_path
 
-    # TODO: REFACTOR WHEN MODEL IS READY
     config = get_linemod_config(DATASET_ROOT)
 
     print("📥 Loading 3D model points and diameters...")
@@ -26,19 +28,18 @@ def evaluate_RGB(
 
     print("📦 Loading trained model...")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model_rot_data = load_model_data(MODEL_PATH, map_location=device, model_key='model_rot')
-    model_rot = ResNetRotation(freeze_backbone=False)
-    model_rot.load_state_dict(model_rot_data['model_rot'])
 
-    model_trans_data = load_model_data(MODEL_PATH, map_location=device, model_key='model_trans')
-    model_trans = TranslationNet()
-    model_trans.load_state_dict(model_trans_data['model_trans'])
-    model = (model_rot.to(device), model_trans.to(device))
+    # Load Rotation Model
+    model_rot = load_model(ROT_MODEL_PATH, device, model_class=ResNetRotation, model_key='model_state_dict', freeze_backbone=False)
+    model_trans = load_model(TRANS_MODEL_PATH, device, model_class=TranslationNet, model_key='model_state_dict')
+    model = (model_rot, model_trans)
+    
 
     print("📚 Preparing test dataset and dataloader...")
     test_dataset = LineModPoseDataset(
         root_dir=DATASET_ROOT,
-        split="test"
+        split="test",
+        verbose=False
     )
 
     test_loader = DataLoader(test_dataset, batch_size=128, shuffle=False, num_workers=2)
@@ -49,9 +50,33 @@ def evaluate_RGB(
         (model_rot, model_trans) = model
         imgs = batch['image'].to(device)
         bbox_info = batch['bbox_info'].to(device)
+        bbox_center = batch['bbox_center'].to(device) # (B, 2) [cx_pix, cy_pix]
+        cam_K = batch['cam_K'].to(device)             # (B, 3, 3)
+        original_width = batch['original_width'].to(device)
+        original_height = batch['original_height'].to(device)
 
+        # Quaternion prediction
         pred_quats = model_rot(imgs)
-        pred_trans = model_trans(imgs, bbox_info)
+
+        # Translation prediction pipeline
+        preds_raw = model_trans(imgs, bbox_info)
+        pred_relative_deltas = preds_raw[:, :2] 
+
+        W_real = bbox_info[:, 2] * original_width
+        H_real = bbox_info[:, 3] * original_height
+
+        real_dims = torch.stack([W_real, H_real], dim=1)
+        pred_deltas = pred_relative_deltas * real_dims
+
+        pred_log_z = preds_raw[:, 2]   # (B, )  -> log(z)
+        pred_z = torch.exp(pred_log_z).clamp(min=0.1, max=10.0)
+
+        pred_trans = inverse_pinhole_projection(
+            crop_center=bbox_center,
+            deltas=pred_deltas,
+            z=pred_z,
+            cam_K=cam_K
+        )
 
         return pred_quats, pred_trans
 
@@ -98,7 +123,8 @@ def evaluate_RGB_rot_only(
     print("📚 Preparing test dataset and dataloader...")
     test_dataset = LineModPoseDataset(
         root_dir=DATASET_ROOT,
-        split="test"
+        split="test",
+        verbose=False
     )
 
     test_loader = DataLoader(test_dataset, batch_size=128, shuffle=False, num_workers=2)

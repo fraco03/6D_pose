@@ -37,7 +37,8 @@ class LineModPoseDataset(Dataset):
         normalize: bool = True,
         input_standard_dimensions: Tuple[int, int] = (640, 480),
         train_ratio: float = 0.8,  # Percentage of data for training
-        random_seed: int = 42      # Fixed seed for reproducibility
+        random_seed: int = 42,      # Fixed seed for reproducibility,
+        verbose: bool = True
     ):
         """
         Args:
@@ -65,11 +66,12 @@ class LineModPoseDataset(Dataset):
         self.config = get_linemod_config(str(self.root_dir))
         
         self.samples = self._build_index()
-        print_ratio = self.train_ratio if self.split == 'train' else 1 - self.train_ratio
-        print(f" Loaded LineModPoseDataset")
-        print(f"   Split: {self.split} (Ratio: {print_ratio:.2f})")
-        print(f"   Objects: {self.object_ids}")
-        print(f"   Total samples: {len(self.samples)}")
+        if verbose:
+            print_ratio = self.train_ratio if self.split == 'train' else 1 - self.train_ratio
+            print(f" Loaded LineModPoseDataset")
+            print(f"   Split: {self.split} (Ratio: {print_ratio:.2f})")
+            print(f"   Objects: {self.object_ids}")
+            print(f"   Total samples: {len(self.samples)}")
 
     def _build_index(self) -> List[Dict]:
         samples = []
@@ -258,7 +260,8 @@ class LineModPoseDataset(Dataset):
             'bbox_info': bbox_info,       # Input for the Network
             'bbox_center': bbox_center,    # Helper for the Loss function
             'original_width': self.input_standard_dimensions[0],
-            'original_height': self.input_standard_dimensions[1]
+            'original_height': self.input_standard_dimensions[1],
+            'img_path': str(sample['img_path'])
         }
 
     def get_class_name(self, class_idx: int) -> str:

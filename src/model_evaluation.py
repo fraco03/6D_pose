@@ -18,7 +18,12 @@ import torch
 from tqdm import tqdm
 
 def evaluate_comprehensive(model, dataloader, device, gt_function, inference_function, model_points: dict, model_diameters: dict):
-    model.eval()
+
+    if isinstance(model, tuple):
+        for m in model:
+            m.eval()
+    else:
+        model.eval()
 
     # --- MAPPING ID TO NAMES (LineMOD Standard) ---
     id_to_name = {

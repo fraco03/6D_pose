@@ -34,7 +34,8 @@ class LineModPoseDepthDataset(Dataset):
         normalize: bool = True,
         input_standard_dimensions: Tuple[int, int] = (640, 480),
         train_ratio: float = 0.8,
-        random_seed: int = 42
+        random_seed: int = 42,
+        verbose: bool = True
     ):
         self.root_dir = Path(root_dir)
         self.data_dir = self.root_dir / 'data'
@@ -53,10 +54,12 @@ class LineModPoseDepthDataset(Dataset):
         
         self.samples = self._build_index()
 
-        print(f" Loaded LineModPoseDepthDataset")
-        print(f"   Split: {self.split} (Ratio: {self.train_ratio})")
-        print(f"   Objects: {self.object_ids}")
-        print(f"   Total samples: {len(self.samples)}")
+        if verbose:
+            split_print = self.train_ratio if self.split == 'train' else 1 - self.train_ratio
+            print(f" Loaded LineModPoseDepthDataset")
+            print(f"   Split: {self.split} (Ratio: {split_print:.2f})")
+            print(f"   Objects: {self.object_ids}")
+            print(f"   Total samples: {len(self.samples)}")
 
     def _build_index(self) -> List[Dict]:
         samples = []

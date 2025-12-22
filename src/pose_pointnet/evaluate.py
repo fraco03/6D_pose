@@ -1,20 +1,17 @@
 from pandas import DataFrame
-
+import torch
 from src.model_evaluation import evalutation_pipeline
 from utils.linemod_config import get_linemod_config
-from utils.load_data import load_model_data
-from src.pose_rgbd.model import RGBDRotationModel
+from utils.load_data import load_model_data, load_model
+from src.pose_pointnet.model import PointNetPoseModel
+from src.pose_pointnet.dataset import PointNetLineModDataset
 from torch.utils.data import DataLoader
-from src.pose_rgbd.dataset import LineModPoseDepthDataset
-import torch
 
-def evaluate_RGBD(
+def evaluate_POINTNET(
         model_path: str,
         dataset_root: str,
         output_path: str
 ) -> DataFrame:
-
-
     MODEL_PATH = model_path
     DATASET_ROOT = dataset_root
     OUTPUT_PATH = output_path
@@ -25,32 +22,39 @@ def evaluate_RGBD(
 
     print("📦 Loading trained model...")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model_data = load_model_data(MODEL_PATH, map_location=device)
-    model = RGBDRotationModel()
-    model.load_state_dict(model_data['model_state_dict'])
-    model = model.to(device)
-
+    model = load_model(
+        checkpoint_location=MODEL_PATH,
+        device=device,
+        model_class=PointNetPoseModel,
+        num_points=1024
+    )
 
     print("📚 Preparing test dataset and dataloader...")
-    test_dataset = LineModPoseDepthDataset(
+    test_dataset = PointNetLineModDataset(
         root_dir=DATASET_ROOT,
         split="test",
         verbose=False
     )
     test_loader = DataLoader(test_dataset, batch_size=128, shuffle=False, num_workers=2)
 
-
-
+    VALID_OBJ_IDS = [1, 2, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15] 
+    max_obj_id = max(VALID_OBJ_IDS)
+        
+        
     def prediction_function(model, batch, device):
-        imgs = batch['image'].to(device)
-        depths = batch['depth'].to(device)
-        pred_quats = model(imgs, depths)
-        pred_trans = batch['3D_center'].to(device)
-        return pred_quats, pred_trans
+        points = batch['points'].to(device)
+        centroids = batch['centroid'].to(device)
+
+        pred_q, pred_t_residual = model(points)
+
+        pred_t = pred_t_residual + centroids
+
+        return pred_q, pred_t
 
     def ground_truth_function(batch, device):
         gt_quats = batch['rotation'].to(device)
-        gt_trans = batch['translation'].to(device)
+        gt_trans = batch['gt_translation'].to(device)
+
         return gt_quats, gt_trans
 
     df = evalutation_pipeline(
@@ -66,5 +70,3 @@ def evaluate_RGBD(
     )
 
     return df
-
-        
