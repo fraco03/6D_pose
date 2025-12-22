@@ -92,7 +92,7 @@ class LineModPoseDepthDataset(Dataset):
             obj_path = self.data_dir / obj_folder
 
             for img_id_int in selected_ids:
-                # Accesso sicuro alle chiavi (int/str/padded)
+                # Safe key access
                 annotations = gt_data.get(img_id_int) or gt_data.get(str(img_id_int)) or gt_data.get(f"{img_id_int:04d}")
                 
                 if not annotations:
@@ -101,20 +101,20 @@ class LineModPoseDepthDataset(Dataset):
                 img_path = obj_path / 'rgb' / f"{img_id_int:04d}.png"
                 depth_path = obj_path / 'depth' / f"{img_id_int:04d}.png"
 
-                # Check esistenza file veloce (senza leggere)
+                # Check file existence
                 if not img_path.exists() or not depth_path.exists():
                     continue
 
                 for ann in annotations:
                     actual_obj_id = int(ann['obj_id'])
 
-                    # FILTRO CRUCIALE: Solo l'oggetto corrente
+                    # Only consider annotations for the current object
                     if actual_obj_id != obj_id:
                         continue
 
                     x, y, w, h = map(int, ann['obj_bb'])
                     
-                    # Validazione BBox (Identica all'RGB Dataset)
+                    # BBox validity checks
                     image_w, image_h = self.input_standard_dimensions
                     if w <= 0 or h <= 0: continue
                     
@@ -124,18 +124,18 @@ class LineModPoseDepthDataset(Dataset):
                     if not (0 <= x0 and 0 <= y0 and x1 <= image_w and y1 <= image_h):
                         continue
 
-                    # Recupero Info Camera
+                    # Get camera info
                     cam_info = info_data.get(img_id_int) or info_data.get(str(img_id_int)) or info_data.get(f"{img_id_int:04d}")
                     if cam_info is None:
                         continue
                     
-                    # Prepara i dati grezzi (converti qui le matrici per risparmiare tempo dopo)
+                    # Get raw pose
                     rotation_matrix = np.array(ann['cam_R_m2c']).reshape(3, 3)
                     translation_vector = np.array(ann['cam_t_m2c'])
                     quaternion_rotation = convert_rotation_to_quaternion(rotation_matrix)
                     cam_K = np.array(cam_info['cam_K']).reshape(3, 3)
 
-                    # Salviamo solo i metadati, niente immagini o calcoli 3D qui!
+                    # Save metadata
                     sample = {
                         'object_id': actual_obj_id,
                         'class_idx': self.id_to_class[actual_obj_id],
@@ -169,16 +169,16 @@ class LineModPoseDepthDataset(Dataset):
         # 2. Load Depth Map
         depth_map = cv2.imread(sample['depth_path'], cv2.IMREAD_UNCHANGED)
         
-        # Gestione errori depth
+        # Depth error handling
         if depth_map is None:
             depth_map = np.zeros((self.input_standard_dimensions[1], self.input_standard_dimensions[0]), dtype=np.float32)
             Z_center = 0.0
         else:
-            # 3. Calcolo Centro 3D (Spostato qui!)
+            # 3. Load 3D Center from Depth Map
             x, y, w, h = map(int, sample['bbox'])
             img_h, img_w = depth_map.shape
             
-            # Centro del bbox
+            # Center of BB
             cx = min(max(x + w // 2, 0), img_w - 1)
             cy = min(max(y + h // 2, 0), img_h - 1)
             
@@ -238,9 +238,11 @@ class LineModPoseDepthDataset(Dataset):
             'img_path': sample['img_path'],
             'rotation': torch.from_numpy(sample['rotation']).float(),
             'translation': torch.from_numpy(sample['translation']).float(),
-            '3D_center': torch.from_numpy(center_3d).float(), # Ecco il valore calcolato "on the fly"
+            '3D_center': torch.from_numpy(center_3d).float(), # 3D center from depth (pred translation)
             'object_id': sample['object_id'],
             'class_idx': sample['class_idx'],
             'cam_K': torch.from_numpy(sample['cam_K']).float(),
-            'bbox': torch.tensor(sample['bbox'], dtype=torch.float32)
+            'bbox': torch.tensor(sample['bbox'], dtype=torch.float32),
+            'original_width': self.input_standard_dimensions[0],
+            'original_height': self.input_standard_dimensions[1]
         }
