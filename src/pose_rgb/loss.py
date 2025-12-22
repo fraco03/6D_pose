@@ -179,3 +179,27 @@ class CombinedPoseLoss(nn.Module):
         
         # We return all three so you can print them separately in the progress bar
         return total_loss, l_rot, l_trans
+    
+
+class UnifiedPoseLoss(nn.Module):
+    def __init__(self, w_rot=1.0, w_trans=2.0):
+        super().__init__()
+        self.w_rot = w_rot
+        self.w_trans = w_trans
+        
+        # Fallback loss rotazione (Geodesic)
+        self.rot_loss_fn = RotationLoss() 
+        # Translation loss (SmoothL1 è robusta agli outlier)
+        self.trans_loss_fn = nn.SmoothL1Loss(beta=1.0)
+
+    def forward(self, pred_rot, gt_rot, pred_trans, gt_trans):
+        
+        # 1. Translation Loss 
+        # Separate XY and Z components
+        loss_xy = self.trans_loss_fn(pred_trans[:, :2], gt_trans[:, :2])
+        loss_z = self.trans_loss_fn(pred_trans[:, 2], gt_trans[:, 2])
+        l_trans = loss_xy + (3.0 * loss_z) # Weight Z more
+        l_rot = self.rot_loss_fn(pred_rot, gt_rot)
+
+        total_loss = (self.w_rot * l_rot) + (self.w_trans * l_trans)
+        return total_loss, l_rot, l_trans
