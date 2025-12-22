@@ -32,7 +32,8 @@ class PointNetLineModDataset(Dataset):
         num_points: int = 1024,  # Fixed number of points required by PointNet
         object_ids: Optional[List[int]] = None,
         train_ratio: float = 0.8,
-        random_seed: int = 42
+        random_seed: int = 42,
+        augment: bool = False
     ):
         self.root_dir = Path(root_dir)
         self.data_dir = self.root_dir / 'data'
@@ -40,6 +41,7 @@ class PointNetLineModDataset(Dataset):
         self.num_points = num_points
         self.train_ratio = train_ratio
         self.random_seed = random_seed
+        self.augment = augment
 
         self.object_ids = object_ids if object_ids is not None else self.VALID_OBJECTS
         self.id_to_class = {obj_id: self.CLASS_NAMES[i] for i, obj_id in enumerate(self.VALID_OBJECTS)}
@@ -57,6 +59,31 @@ class PointNetLineModDataset(Dataset):
         print(f"   Split: {self.split} (Ratio: {self.train_ratio})")
         print(f"   Num Points: {self.num_points}")
         print(f"   Total samples: {len(self.samples)}")
+
+    def augment_cloud(self, points):
+        """
+        Applica data augmentation alla nuvola di punti (N, 3).
+        Non cambia la Ground Truth, sporca solo l'input per renderlo robusto.
+        """
+        # 1. JITTERING (Simula il rumore del sensore)
+        # Aggiunge un rumore casuale gaussiano piccolissimo a ogni punto
+        sigma = 0.005  # 5 millimetri di deviazione standard
+        clip = 0.02    # Taglia il rumore massimo a 2 cm
+        noise = np.clip(sigma * np.random.randn(*points.shape), -clip, clip)
+        points += noise
+
+        # 2. DROPOUT (Simula occlusioni)
+        # Sceglie a caso dei punti e li mette a zero (o li sposta all'infinito)
+        # Qui usiamo una tecnica soft: azzeriamo solo se il random è alto
+        dropout_ratio = 0.1 # 10% di probabilità di perdere punti
+        num_points = points.shape[0]
+        # Genera una maschera casuale
+        drop_mask = np.random.random(num_points) < dropout_ratio
+        # Sostituiamo i punti droppati con il primo punto (per non rompere la shape)
+        # Oppure aggiungiamo rumore molto forte a questi punti
+        points[drop_mask] = points[0] 
+        
+        return points
 
     def _build_index(self) -> List[Dict]:
         """
@@ -215,6 +242,14 @@ class PointNetLineModDataset(Dataset):
             choice_idx = np.random.choice(num_valid_points, self.num_points, replace=True)
             
         points = points[choice_idx, :] # Shape: (num_points, 3)
+
+        # ==========================================================
+        # ### NEW CODE FOR AUGMENTATION ###
+        # ==========================================================
+        # Check if 'self.augment' exists and is True
+        if hasattr(self, 'augment') and self.augment:
+            points = self.augment_cloud(points)
+        # ==========================================================
         
         # 5. Normalization / Centering
         # PointNet learns the local shape. We subtract the centroid.
