@@ -2,7 +2,7 @@ from pandas import DataFrame
 
 from src.model_evaluation import evalutation_pipeline
 from utils.linemod_config import get_linemod_config
-from utils.load_data import load_model
+from utils.load_data import load_model_data
 from src.pose_rgbd.model import RGBDRotationModel
 from torch.utils.data import DataLoader
 from src.pose_rgbd.dataset import LineModPoseDepthDataset
@@ -25,7 +25,7 @@ def evaluate_RGBD(
 
     print("📦 Loading trained model...")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model_data = load_model(MODEL_PATH, map_location=device)
+    model_data = load_model_data(MODEL_PATH, map_location=device)
     model = RGBDRotationModel()
     model.load_state_dict(model_data['model_state_dict'])
     model = model.to(device)

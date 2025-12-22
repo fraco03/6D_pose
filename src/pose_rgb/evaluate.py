@@ -2,7 +2,7 @@ from pandas import DataFrame
 
 from src.model_evaluation import evalutation_pipeline
 from utils.linemod_config import get_linemod_config
-from utils.load_data import load_model
+from utils.load_data import load_model_data
 from src.pose_rgb.model import ResNetRotation, TranslationNet
 from torch.utils.data import DataLoader
 from src.pose_rgb.dataset import LineModPoseDataset
@@ -26,11 +26,11 @@ def evaluate_RGB(
 
     print("📦 Loading trained model...")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model_rot_data = load_model(MODEL_PATH, map_location=device, model_key='model_rot')
+    model_rot_data = load_model_data(MODEL_PATH, map_location=device, model_key='model_rot')
     model_rot = ResNetRotation(freeze_backbone=False)
     model_rot.load_state_dict(model_rot_data['model_rot'])
 
-    model_trans_data = load_model(MODEL_PATH, map_location=device, model_key='model_trans')
+    model_trans_data = load_model_data(MODEL_PATH, map_location=device, model_key='model_trans')
     model_trans = TranslationNet()
     model_trans.load_state_dict(model_trans_data['model_trans'])
     model = (model_rot.to(device), model_trans.to(device))
@@ -90,7 +90,7 @@ def evaluate_RGB_rot_only(
 
     print("📦 Loading trained model...")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model_data = load_model(MODEL_PATH, map_location=device, model_key='model_state_dict')
+    model_data = load_model_data(MODEL_PATH, map_location=device, model_key='model_state_dict')
     model = ResNetRotation(freeze_backbone=False)
     model.load_state_dict(model_data['model_state_dict'])
     model = model.to(device)
