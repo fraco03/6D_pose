@@ -27,130 +27,166 @@ def compute_iou(box1, box2):
     union = area1 + area2 - inter
     return inter / union if union > 0 else 0
 
+import json
+
+def load_test_dataset_from_disk(load_path='/kaggle/working/test_data_subset.json'):
+    print(f"📂 Caricamento dati da: {load_path}")
+    
+    if not os.path.exists(load_path):
+        raise FileNotFoundError("❌ Il file JSON non esiste! Caricalo nello spazio di lavoro.")
+        
+    with open(load_path, 'r') as f:
+        data = json.load(f)
+        
+    print(f"✅ Caricati {len(data)} elementi.")
+    return data
+
 # CHANGE iou FOR DIFFERENET mAP METRICS
-def calculate_adapted_map50(model_path, source_root, iou_thresh=0.5):
+def calculate_adapted_map50(model_path, test_data_input, iou_thresh=0.5):
     """
-    Calculate adapted mAP@50 for the partially labeled LineMOD dataset.
+    load data from load_test_dataset_from_disk() and pass it here to
+    Calculate adapted mAP (masked evaluation) using the list of test data dictionary.
     
     Strategy:
-    For each image, only predictions of the class belonging to the specific folder
-    are considered valid. Other predictions are masked out (ignored), so they don't
-    count as False Positives when labels are missing.
-    
+    1. Extracts the 'Target Class' from the source file path (e.g., .../01/rgb/.. -> Class 1).
+    2. Filters Ground Truth: Only considers labels belonging to that Target Class.
+    3. Filters Predictions: Only considers predictions of that Target Class.
+    4. Ignores all other objects (avoiding False Positives for unlabelled background objects).
+
     Args:
-        model_path (str): Path to trained YOLO model weights
-        source_root (str): Root directory of LineMOD dataset
-        iou_thresh (float): IoU threshold for considering a detection correct (default 0.5)
-        
+        model_path (str): Path to trained YOLO model weights.
+        test_data_input (list): The GLOBAL_TEST_SUBSET list from Step 1.
+        iou_thresh (float): IoU threshold (default 0.5).
+
     Returns:
-        float: Mean Average Precision at IoU threshold
+        float: Mean Average Precision (mAP).
     """
-    # Configuration
+    
+    # --- CONFIGURATION ---
+    # Must match the training class mapping
     valid_obj_ids = [1, 2, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15]
     class_names = ['ape', 'benchvise', 'camera', 'can', 'cat', 'driller', 'duck', 
                    'eggbox', 'glue', 'holepuncher', 'iron', 'lamp', 'phone']
+    
+    # Map Real Folder ID (1, 2...) -> YOLO Class Index (0, 1...)
     id_map = {obj_id: i for i, obj_id in enumerate(valid_obj_ids)}
-    obj_folders = [f"{i:02d}" for i in valid_obj_ids]
 
-    print(f"⚖️  Computing adapted mAP@{int(iou_thresh*100)} (masked evaluation)...")
+    print(f"⚖️  Computing adapted mAP@{int(iou_thresh*100)} (Masked Evaluation)...")
     model = YOLO(model_path)
     
     # Data structures for AP calculation per class
-    class_preds = {i: [] for i in range(len(class_names))}  # [confidence, is_true_positive]
-    class_total_gt = {i: 0 for i in range(len(class_names))}  # Total ground truths per class
+    # class_preds[class_idx] = list of [confidence, is_true_positive (1 or 0)]
+    class_preds = {i: [] for i in range(len(class_names))} 
+    class_total_gt = {i: 0 for i in range(len(class_names))}
 
-    # Main evaluation loop
-    for folder_str in tqdm(obj_folders, desc="Evaluating"):
-        base_dir = os.path.join(source_root, folder_str)
-        rgb_dir = os.path.join(base_dir, 'rgb')
-        gt_path = os.path.join(base_dir, 'gt.yml')
-        train_txt = os.path.join(base_dir, 'train.txt')
-        
-        if not os.path.exists(gt_path): 
-            continue
+    # --- HELPER: IoU Calculation ---
+    def compute_iou(boxA, boxB):
+        # box: [x1, y1, x2, y2]
+        xA = max(boxA[0], boxB[0])
+        yA = max(boxA[1], boxB[1])
+        xB = min(boxA[2], boxB[2])
+        yB = min(boxA[3], boxB[3])
+        interArea = max(0, xB - xA) * max(0, yB - yA)
+        boxAArea = (boxA[2] - boxA[0]) * (boxA[3] - boxA[1])
+        boxBArea = (boxB[2] - boxB[0]) * (boxB[3] - boxB[1])
+        unionArea = boxAArea + boxBArea - interArea
+        return interArea / unionArea if unionArea > 0 else 0
 
-        # Load training IDs to exclude them from evaluation
-        train_ids = set()
-        if os.path.exists(train_txt):
-            with open(train_txt, 'r') as f:
-                train_ids = {line.strip() for line in f.readlines()}
+    # --- MAIN EVALUATION LOOP ---
+    for item in tqdm(test_data_input, desc="Evaluating"):
         
-        with open(gt_path, 'r') as f: 
-            gt_data = yaml.safe_load(f)
+        src_path = item['src']
+        labels_raw = item['labels']
         
-        target_cls_idx = id_map[int(folder_str)]
+        # 1. DETERMINE TARGET CLASS from File Path
+        # We assume path structure like: .../{folder_id}/rgb/xxxx.png
+        # We split path and find the folder name
+        try:
+            # Get parent of parent folder name (assuming .../01/rgb/img.png)
+            folder_str = os.path.basename(os.path.dirname(os.path.dirname(src_path)))
+            folder_id = int(folder_str)
+            
+            if folder_id not in id_map: continue # Skip if folder is not in our list
+            
+            target_cls_idx = id_map[folder_id]
+        except:
+            continue # Skip if path format is unexpected
 
-        for img_id_int, anns in gt_data.items():
-            img_id_str = str(img_id_int)
-            if img_id_str in train_ids: 
-                continue  # Skip training images
+        # 2. PARSE GROUND TRUTH (Filter by Target Class)
+        img = cv2.imread(src_path)
+        if img is None: continue
+        h_img, w_img = img.shape[:2]
+        
+        gt_boxes = []
+        for lbl in labels_raw:
+            parts = list(map(float, lbl.split()))
+            cls_id = int(parts[0])
             
-            fname = f"{img_id_int:04d}.png"
-            img_path = os.path.join(rgb_dir, fname)
-            if not os.path.exists(img_path): 
-                continue
+            # ADAPTED STRATEGY: Only keep GT if it matches the folder class
+            if cls_id == target_cls_idx:
+                # YOLO format (xc, yc, w, h) normalized -> Absolute (x1, y1, x2, y2)
+                xc, yc, w, h = parts[1], parts[2], parts[3], parts[4]
+                x1 = (xc - w/2) * w_img
+                y1 = (yc - h/2) * h_img
+                x2 = (xc + w/2) * w_img
+                y2 = (yc + h/2) * h_img
+                gt_boxes.append([x1, y1, x2, y2])
+
+        if not gt_boxes: continue # No relevant object in this image
+
+        class_total_gt[target_cls_idx] += len(gt_boxes)
+
+        # 3. RUN PREDICTION
+        # conf=0.01 is crucial to get the full Precision-Recall curve
+        results = model.predict(img, conf=0.01, verbose=False)
+        
+        # 4. FILTER PREDICTIONS (Filter by Target Class)
+        valid_preds = []
+        for box in results[0].boxes:
+            p_cls = int(box.cls[0])
             
-            # Collect ground truth boxes for target class only
-            gt_boxes = []
-            for ann in anns:
-                oid = int(ann['obj_id'])
-                if oid == int(folder_str):
-                    x, y, w, h = ann['obj_bb']
-                    gt_boxes.append([x, y, x+w, y+h])  # Convert to [x1, y1, x2, y2]
+            # ADAPTED STRATEGY: Ignore predictions of other classes
+            if p_cls == target_cls_idx:
+                # Get coordinates
+                x, y, w, h = box.xywh[0].tolist() # xywh is absolute center
+                x1, y1 = x - w/2, y - h/2
+                x2, y2 = x + w/2, y + h/2
+                conf = float(box.conf[0])
+                valid_preds.append({'bbox': [x1, y1, x2, y2], 'conf': conf})
+
+        # 5. MATCHING (IoU)
+        # Sort predictions by confidence (High -> Low)
+        valid_preds.sort(key=lambda x: x['conf'], reverse=True)
+        gt_matched = [False] * len(gt_boxes)
+        
+        for pred in valid_preds:
+            best_iou = 0
+            best_gt_idx = -1
             
-            if not gt_boxes: 
-                continue
+            # Find best overlapping GT
+            for idx, gt_box in enumerate(gt_boxes):
+                iou = compute_iou(pred['bbox'], gt_box)
+                if iou > best_iou:
+                    best_iou = iou
+                    best_gt_idx = idx
             
-            class_total_gt[target_cls_idx] += len(gt_boxes)
-            
-            # Run YOLO prediction with low confidence threshold for full PR curve
-            results = model.predict(img_path, conf=0.01, verbose=False)
-            
-            # Filter predictions: keep only target class predictions
-            valid_preds = []
-            for box in results[0].boxes:
-                cls_pred = int(box.cls[0])
-                if cls_pred == target_cls_idx:
-                    x, y, w, h = box.xywh[0].tolist()
-                    x1, y1 = x - w/2, y - h/2  # Convert center to corners
-                    x2, y2 = x + w/2, y + h/2
-                    conf = float(box.conf[0])
-                    valid_preds.append({'bbox': [x1, y1, x2, y2], 'conf': conf})
-            
-            # Match predictions to ground truth (sorted by confidence descending)
-            valid_preds.sort(key=lambda x: x['conf'], reverse=True)
-            gt_matched = [False] * len(gt_boxes)
-            
-            for pred in valid_preds:
-                best_iou = 0
-                best_gt_idx = -1
-                
-                # Find best matching ground truth
-                for idx, gt_box in enumerate(gt_boxes):
-                    iou = compute_iou(pred['bbox'], gt_box)
-                    if iou > best_iou:
-                        best_iou = iou
-                        best_gt_idx = idx
-                
-                # Classify as TP or FP
-                if best_iou >= iou_thresh:
-                    if not gt_matched[best_gt_idx]:
-                        class_preds[target_cls_idx].append([pred['conf'], 1])  # True Positive
-                        gt_matched[best_gt_idx] = True
-                    else:
-                        class_preds[target_cls_idx].append([pred['conf'], 0])  # FP (duplicate)
+            # Check Threshold
+            if best_iou >= iou_thresh:
+                if not gt_matched[best_gt_idx]:
+                    # True Positive
+                    class_preds[target_cls_idx].append([pred['conf'], 1])
+                    gt_matched[best_gt_idx] = True
                 else:
-                    class_preds[target_cls_idx].append([pred['conf'], 0])  # FP (low IoU)
+                    # False Positive (Duplicate detection)
+                    class_preds[target_cls_idx].append([pred['conf'], 0])
+            else:
+                # False Positive (Low IoU or Background)
+                class_preds[target_cls_idx].append([pred['conf'], 0])
 
-    # --- CALCOLO AP (AVERAGE PRECISION) PER CLASSE ---
-    print("\n" + "="*50)
-    print(f"{'CLASS':<15} | {'AP@50':<10} | {'GT Count':<10}")
-    print("-" * 50)
-    
-
-    print("\n" + "="*50)
-    print(f"{'CLASS':<15} | {'AP@50':<10} | {'GT Count':<10}")
-    print("-" * 50)
+    # --- CALCULATE AP PER CLASS ---
+    print("\n" + "="*60)
+    print(f"{'CLASS':<15} | {'AP@' + str(int(iou_thresh*100)):<10} | {'GT Count':<10} | {'Preds Count':<10}")
+    print("-" * 60)
     
     aps = []
     
@@ -159,38 +195,47 @@ def calculate_adapted_map50(model_path, source_root, iou_thresh=0.5):
         total_gt = class_total_gt[cls_idx]
         
         if total_gt == 0:
+            print(f"{class_names[cls_idx]:<15} | {'N/A':<10} | {0:<10} | {len(preds)}")
             continue
             
         if not preds:
             ap = 0.0
         else:
             preds = np.array(preds)
+            # sort by confidence descending (already roughly sorted but good safety)
+            sort_ind = np.argsort(-preds[:, 0])
+            preds = preds[sort_ind]
+            
             tp = np.cumsum(preds[:, 1])
             fp = np.cumsum(1 - preds[:, 1])
             
             rec = tp / total_gt
             prec = tp / (tp + fp + 1e-16)
             
-            # Compute AP using area under precision-recall curve
+            # 11-point interpolation or AUC (Area Under Curve)
+            # We use AUC integration with padding
             mrec = np.concatenate(([0.0], rec, [1.0]))
             mpre = np.concatenate(([0.0], prec, [0.0]))
             
-            # Make precision monotonically decreasing
+            # Monotonically decreasing precision
             for i in range(len(mpre) - 1, 0, -1):
                 mpre[i - 1] = np.maximum(mpre[i - 1], mpre[i])
                 
-            # Calculate area under curve
+            # Area under curve
             i = np.where(mrec[1:] != mrec[:-1])[0]
             ap = np.sum((mrec[i + 1] - mrec[i]) * mpre[i + 1])
             
         aps.append(ap)
-        print(f"{class_names[cls_idx]:<15} | {ap:.4f}     | {total_gt}")
+        print(f"{class_names[cls_idx]:<15} | {ap:.4f}     | {total_gt:<10} | {len(preds)}")
     
     mean_ap = np.mean(aps) if aps else 0.0
-    print("-" * 50)
-    print(f"Adapted mAP@50  | {mean_ap:.4f}")
-    print("="*50)
+    print("-" * 60)
+    print(f"Adapted mAP@{int(iou_thresh*100)}  | {mean_ap:.4f}")
+    print("="*60)
     
+    return mean_ap
+
+   
 def visualize_bbox(image_path):
     """
     Visualize YOLO Bounding Boxes on a specific image
