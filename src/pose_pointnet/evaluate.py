@@ -19,7 +19,7 @@ from torch.utils.data import DataLoader
 # Import dei tuoi moduli esistenti
 from src.pose_pointnet.model import PointNetPoseModel
 from src.pose_pointnet.dataset import PointNetLineModDataset
-from src.pose_pointnet.model_evaluation import compute_ADD_metric_quaternion, compute_ADDs_metric_quaternion
+from src.model_evaluation import compute_ADD_metric_quaternion, compute_ADDs_metric_quaternion
 
 def evaluate_POINTNET(
         model_path: str,
