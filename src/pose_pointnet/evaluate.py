@@ -143,7 +143,7 @@ def evaluate_POINTNET_ICP(model_path, dataset_root, output_path, device="cuda"):
     device = torch.device(device if torch.cuda.is_available() else "cpu")
     
     # 1. Carica il Dataset (Split TEST)
-    test_dataset = PointNetLineModDataset(root_dir=dataset_root, split='test', augment=False)
+    test_dataset = PointNetLineModDataset(root_dir=dataset_root, split='test')
     test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False) # Batch 1 per semplicità nell'ICP
     
     # 2. Carica il Modello
