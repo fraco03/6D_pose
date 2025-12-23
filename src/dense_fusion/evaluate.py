@@ -3,11 +3,14 @@ import torch
 from src.model_evaluation import evalutation_pipeline
 from utils.linemod_config import get_linemod_config
 from utils.load_data import load_model_data, load_model
-from src.pose_pointnet.model import PointNetPoseModel
-from src.pose_pointnet.dataset import PointNetLineModDataset
+# --- MODIFICHE PER DENSEFUSION ---
+from src.dense_fusion.model import FusionPoseModel         # Importa il modello corretto
+from src.dense_fusion.dataset import DenseFusionLineModDataset # Importa il dataset corretto
+# ---------------------------------
 from torch.utils.data import DataLoader
+import os
 
-def evaluate_POINTNET(
+def evaluate_DENSEFUSION(
         model_path: str,
         dataset_root: str,
         output_path: str
@@ -15,38 +18,46 @@ def evaluate_POINTNET(
     MODEL_PATH = model_path
     DATASET_ROOT = dataset_root
     OUTPUT_PATH = output_path
+    
+    # Check preventivo per evitare FileNotFoundError
+    if not os.path.exists(MODEL_PATH):
+        raise FileNotFoundError(f"❌ Errore: Il file del modello non esiste in: {MODEL_PATH}\nControlla la variabile 'checkpoint_path' del training precedente.")
+
     config = get_linemod_config(DATASET_ROOT)
 
     print("📥 Loading 3D model points and diameters...")
     model_points, diameters = config.load_all_models_3d('mm')
 
-    print("📦 Loading trained model...")
+    print(f"📦 Loading trained DenseFusion model from {MODEL_PATH}...")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    # --- CARICAMENTO MODELLO DENSEFUSION ---
     model = load_model(
         checkpoint_location=MODEL_PATH,
         device=device,
-        model_class=PointNetPoseModel,
+        model_class=FusionPoseModel,  # Usa la classe Fusion
         num_points=1024
     )
 
     print("📚 Preparing test dataset and dataloader...")
-    test_dataset = PointNetLineModDataset(
+    # --- CARICAMENTO DATASET DENSEFUSION ---
+    test_dataset = DenseFusionLineModDataset(
         root_dir=DATASET_ROOT,
         split="test",
         verbose=False
     )
-    test_loader = DataLoader(test_dataset, batch_size=128, shuffle=False, num_workers=2)
+    test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False, num_workers=2)
 
-    VALID_OBJ_IDS = [1, 2, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15] 
-    max_obj_id = max(VALID_OBJ_IDS)
-        
-        
     def prediction_function(model, batch, device):
+        # Estrai i dati necessari per DenseFusion
         points = batch['points'].to(device)
+        images = batch['rgb'].to(device)   # RGB Images
         centroids = batch['centroid'].to(device)
 
-        pred_q, pred_t_residual = model(points)
+        # Forward pass con ENTRAMBI gli input
+        pred_q, pred_t_residual = model(points, images)
 
+        # Ricostruisci la traslazione assoluta
         pred_t = pred_t_residual + centroids
 
         return pred_q, pred_t
@@ -54,9 +65,9 @@ def evaluate_POINTNET(
     def ground_truth_function(batch, device):
         gt_quats = batch['rotation'].to(device)
         gt_trans = batch['gt_translation'].to(device)
-
         return gt_quats, gt_trans
 
+    # Pipeline di valutazione standard
     df = evalutation_pipeline(
         model, 
         test_loader,
@@ -66,7 +77,7 @@ def evaluate_POINTNET(
         model_points,
         diameters,
         report_file_path=OUTPUT_PATH,
-        um='mm'
+        um='mm' # Assicurati che l'unità corrisponda al dataset (di solito i modelli 3D sono in mm)
     )
 
     return df
