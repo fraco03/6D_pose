@@ -37,7 +37,8 @@ class LineModPoseDataset(Dataset):
         normalize: bool = True,
         input_standard_dimensions: Tuple[int, int] = (640, 480),
         train_ratio: float = 0.8,  # Percentage of data for training
-        random_seed: int = 42      # Fixed seed for reproducibility
+        random_seed: int = 42,      # Fixed seed for reproducibility,
+        verbose: bool = True
     ):
         """
         Args:
@@ -65,17 +66,18 @@ class LineModPoseDataset(Dataset):
         self.config = get_linemod_config(str(self.root_dir))
         
         self.samples = self._build_index()
-
-        print(f" Loaded LineModPoseDepthDataset")
-        print(f"   Split: {self.split} (Ratio: {self.train_ratio if self.split=='train' else 1 - self.train_ratio})")
-        print(f"   Objects: {self.object_ids}")
-        print(f"   Total samples: {len(self.samples)}")
+        if verbose:
+            print_ratio = self.train_ratio if self.split == 'train' else 1 - self.train_ratio
+            print(f" Loaded LineModPoseDataset")
+            print(f"   Split: {self.split} (Ratio: {print_ratio:.2f})")
+            print(f"   Objects: {self.object_ids}")
+            print(f"   Total samples: {len(self.samples)}")
 
     def _build_index(self) -> List[Dict]:
         samples = []
 
         for obj_id in self.object_ids:
-            # 1. Load GT data and Camera info using cached config
+            # 1. Load GT data
             try:
                 gt_data = self.config.get_gt_data(obj_id)
                 info_data = self.config.get_camera_info(obj_id)
@@ -83,82 +85,92 @@ class LineModPoseDataset(Dataset):
                 print(f"Warning: Data files not found for object {obj_id}")
                 continue
 
-            # 2. Retrieve ALL valid image IDs available for this object
-            # We use the keys from gt_data as the master list.
-            all_img_ids = sorted([int(k) for k in gt_data.keys()])
+            # 2. Retrieve ALL valid image IDs
+            # Robust key handling: keys might be strings or ints in the loaded dict
+            all_keys = list(gt_data.keys())
+            all_img_ids = sorted([int(k) for k in all_keys])
             
             if not all_img_ids:
                 continue
 
-            # 3. Apply Deterministic Shuffle
-            # Using a local Random instance prevents affecting the global random state
+            # 3. Deterministic Shuffle
             rng = random.Random(self.random_seed)
             rng.shuffle(all_img_ids)
 
-            # 4. Calculate the split index
+            # 4. Split logic
             split_idx = int(len(all_img_ids) * self.train_ratio)
 
-            # 5. Select IDs based on the requested split
             if self.split == 'train':
                 selected_ids = all_img_ids[:split_idx]
             elif self.split == 'test' or self.split == 'val':
                 selected_ids = all_img_ids[split_idx:]
             else:
-                raise ValueError(f"Invalid split name: {self.split}. Use 'train' or 'test'.")
+                raise ValueError(f"Invalid split name: {self.split}")
 
             obj_folder = f"{obj_id:02d}"
             obj_path = self.data_dir / obj_folder
 
-            # Load samples
-            for img_id in selected_ids:
-                img_id = int(img_id)
-                if img_id not in gt_data:
-                    continue  # Skip if no GT data for this image
+            # 5. Load samples
+            for img_id_int in selected_ids:
+                
+                # --- FIX 1: Accesso robusto alle chiavi (come nel Depth Dataset) ---
+                annotations = gt_data.get(img_id_int) or gt_data.get(str(img_id_int)) or gt_data.get(f"{img_id_int:04d}")
+                if not annotations:
+                    continue
 
-                img_path = obj_path / 'rgb' / f"{img_id:04d}.png"
+                # Paths
+                img_path = obj_path / 'rgb' / f"{img_id_int:04d}.png"
+                
+                # Se usi il depth dataset accoppiato, dovresti controllare anche l'esistenza del depth qui
+                # depth_path = obj_path / 'depth' / f"{img_id_int:04d}.png"
+                
+                if not img_path.exists(): 
+                    continue
 
-                if not img_path.exists():
-                    continue  # Skip if image does not exist
-
-                annotations = gt_data[img_id]
                 for ann in annotations:
-                    
-                    actula_obj_id = int(ann['obj_id'])
+                    actual_obj_id = int(ann['obj_id'])
+
+                    # --- FIX 2: Filtro fondamentale dell'ID ---
+                    # Ignoriamo le annotazioni di altri oggetti presenti nella stessa foto
+                    if actual_obj_id != obj_id:
+                        continue
 
                     rotation_matrix = np.array(ann['cam_R_m2c']).reshape(3, 3)
                     translation_vector = np.array(ann['cam_t_m2c'])
                     quaternion_rotation = convert_rotation_to_quaternion(rotation_matrix)
 
                     x, y, w, h = map(int, ann['obj_bb'])
-
-                    #validate bbox
                     
+                    # --- FIX 3: Validazione BBox Identica ---
                     image_w, image_h = self.input_standard_dimensions
 
                     # Skip invalid size
-                    if w <= 0 or h <= 0:
-                        continue
+                    if w <= 0 or h <= 0: continue
                     
                     x0, y0 = x, y
                     x1, y1 = x + w, y + h
                         
-                    # invalid bb 
-                    if x1 <= x0 or y1 <= y0:
-                        continue
+                    # invalid bb coordinates
+                    if x1 <= x0 or y1 <= y0: continue
                     
-                    # Require bbox fully inside image bounds (inclusive on edges)
+                    # Strict boundary check (deve essere identico nell'altro dataset)
                     if not (0 <= x0 and 0 <= y0 and x1 <= image_w and y1 <= image_h):
                         continue
                     
+                    # Recuperiamo le info camera (Gestione robusta chiavi)
+                    cam_info = info_data.get(img_id_int) or info_data.get(str(img_id_int)) or info_data.get(f"{img_id_int:04d}")
+                    if cam_info is None:
+                        continue
+
                     sample = {
-                        'object_id': actula_obj_id,
-                        'class_idx': self.id_to_class[actula_obj_id],
-                        'img_id': img_id,
-                        'img_path': obj_path / 'rgb' / f"{img_id:04d}.png",
+                        'object_id': actual_obj_id,
+                        'class_idx': self.id_to_class[actual_obj_id],
+                        'img_id': img_id_int,
+                        'img_path': img_path,
                         'rotation': quaternion_rotation,
-                        'translation': translation_vector/1000.0,  # Convert mm to meters
-                        'bbox': ann['obj_bb'],  # [x, y, w, h]
-                        'cam_K': np.array(info_data[img_id]['cam_K']).reshape(3, 3)
+                        'translation': translation_vector/1000.0,
+                        'bbox': ann['obj_bb'],
+                        'cam_K': np.array(cam_info['cam_K']).reshape(3, 3)
                     }
 
                     samples.append(sample)
@@ -178,7 +190,7 @@ class LineModPoseDataset(Dataset):
             cropped_img = np.zeros((self.image_size[1], self.image_size[0], 3), dtype=np.uint8)
         else:
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-
+            x, y, w, h = tuple(map(int, sample['bbox']))
             # Crop using validated bounding box (already checked in _build_index)
             H, W = img.shape[:2]
             # clip bbox to image bounds
@@ -246,7 +258,10 @@ class LineModPoseDataset(Dataset):
             'cam_K': torch.from_numpy(sample['cam_K']).float(),                 # (3, 3)
             'img_id': sample['img_id'],                                          # int
             'bbox_info': bbox_info,       # Input for the Network
-            'bbox_center': bbox_center    # Helper for the Loss function
+            'bbox_center': bbox_center,    # Helper for the Loss function
+            'original_width': self.input_standard_dimensions[0],
+            'original_height': self.input_standard_dimensions[1],
+            'img_path': str(sample['img_path'])
         }
 
     def get_class_name(self, class_idx: int) -> str:

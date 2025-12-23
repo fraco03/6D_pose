@@ -56,7 +56,7 @@ class LineModConfig:
         self._split_cache: Dict[tuple, list] = {}  # Split files (obj_id, split) -> img_ids
         
         self._initialized = True
-        print(f"✅ LineModConfig initialized: {self.dataset_root}")
+        # print(f"✅ LineModConfig initialized: {self.dataset_root}")
     
     def _load_models_info(self) -> dict:
         """Load models_info.yml"""
@@ -278,6 +278,19 @@ class LineModConfig:
     def get_dataset_root(self) -> Path:
         """Get current dataset root path"""
         return self.dataset_root
+    
+    def load_all_models_3d(self, unit: str = 'm') -> tuple[dict, dict]:
+        point_cache = {}
+        diameter_cache = {}
+
+        for obj_id in self.models_info.keys():  
+            points = self.get_model_3d(obj_id, unit=unit)
+            diameter = self.models_info[obj_id]['diameter'] 
+            diameter = diameter / 1000.0 if unit == 'm' else diameter
+            point_cache[obj_id] = points
+            diameter_cache[obj_id] = diameter
+        return point_cache, diameter_cache
+
 
 
 # Global singleton instance

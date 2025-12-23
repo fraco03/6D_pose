@@ -60,5 +60,37 @@ def root_dataset_path():
     return DATASET_PATH
 
 
+def load_model_data(checkpoint_location: str, map_location: str, model_key: str = 'model_state_dict', allow_multiple_devices=False) -> dict:
+    """
+    Loads model points from a .pth file.
 
-    
+    Args:
+        checkpoint_location (str): Path to the .pth file containing model weights.
+
+    Returns:
+        dict: A dictionary containing checkpoint data
+    """
+    import torch
+    from collections import OrderedDict
+
+    model_data = torch.load(checkpoint_location, map_location=map_location)
+
+    state_dict = model_data.get(model_key, model_data)
+
+    if not allow_multiple_devices:
+        new_state_dict = OrderedDict()
+
+        for key, value in state_dict.items():
+            new_key = key.replace('module.', '')  # Remove 'module.' prefix if present
+            new_state_dict[new_key] = value
+
+        model_data[model_key] = new_state_dict
+    return model_data
+
+def load_model(checkpoint_location: str, device: str, model_class, model_key: str = 'model_state_dict', **kwargs):
+    model_data = load_model_data(checkpoint_location=checkpoint_location, map_location=device, model_key=model_key)
+
+    model = model_class(**kwargs)
+    model.load_state_dict(model_data[model_key])
+    model.to(device)
+    return model

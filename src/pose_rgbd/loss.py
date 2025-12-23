@@ -9,11 +9,10 @@ class MultiObjectPointMatchingLoss(nn.Module):
                                              Contains point clouds for all objects.
         """
         super(MultiObjectPointMatchingLoss, self).__init__()
-        # Register the bank of points
         self.register_buffer('point_bank', all_model_points)
 
     def quaternion_to_matrix(self, quats):
-        # (Same standard conversion function as before)
+        
         x, y, z, w = quats[:, 0], quats[:, 1], quats[:, 2], quats[:, 3]
         x2, y2, z2 = x*x, y*y, z*z
         xy, xz, yz = x*y, x*z, y*z

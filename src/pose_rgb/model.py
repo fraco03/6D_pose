@@ -209,3 +209,4 @@ class TranslationNet(nn.Module):
         pred = self.regressor(combined)
         
         return pred
+    

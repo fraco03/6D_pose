@@ -213,3 +213,6 @@ Linemod_preprocessed*/
 yolo11*/**
 
 __pycache__/
+
+**/*_final/
+**/*_run/

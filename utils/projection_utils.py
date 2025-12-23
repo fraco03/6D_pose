@@ -59,7 +59,8 @@ def project_points_to_2dimage(points_3d, cam_K, R_quat, t_vec):
     points_2d_homogeneous = points_2d_homogeneous.T  # Nx3
 
     # Convert from homogeneous to Cartesian coordinates
-    points_2d = points_2d_homogeneous[:, :2] / points_2d_homogeneous[:, 2][:, np.newaxis]  # Nx2
+    epsilon = 1e-8
+    points_2d = points_2d_homogeneous[:, :2] / (points_2d_homogeneous[:, 2][:, np.newaxis] + epsilon)  # Nx2
 
     return points_2d
 
@@ -139,10 +140,10 @@ def draw_3d_axes(
     ])
     points_3d = np.vstack([origin, axes_3d])  # (4, 3)
     points_2d = project_points_to_2dimage(points_3d, cam_K, rotation_quat, translation)
-    origin_2d = points_2d[0].astype(int)
-    x_axis_2d = points_2d[1].astype(int)
-    y_axis_2d = points_2d[2].astype(int)
-    z_axis_2d = points_2d[3].astype(int)
+    origin_2d = np.nan_to_num(points_2d[0]).astype(int)
+    x_axis_2d = np.nan_to_num(points_2d[1]).astype(int)
+    y_axis_2d = np.nan_to_num(points_2d[2]).astype(int)
+    z_axis_2d = np.nan_to_num(points_2d[3]).astype(int)
 
     # Use custom or default colors
     if color_axes is None:
@@ -307,21 +308,21 @@ def visualize_pose_comparison(image, object_id, cam_K,
     
     # Project GT (cyan bbox, blue axes)
     gt_bbox_2d = project_bbox_corners(object_id, gt_rotation, gt_translation, cam_K)
-    img_vis = draw_3d_bbox(img_vis, gt_bbox_2d, color=(0, 255, 255), thickness=2)
+    img_vis = draw_3d_bbox(img_vis, gt_bbox_2d, color=(255, 255, 0), thickness=2) # Cyan in BGR
     # Axes color for GT: blue/cyan shades
-    gt_axes_colors = {'x': (0, 128, 255), 'y': (0, 255, 255), 'z': (0, 128, 255)}
+    gt_axes_colors = {'x': (255, 0, 0), 'y': (255, 255, 0), 'z': (255, 128, 0)} # Blue, Cyan, Light Blue
     img_vis = draw_3d_axes(img_vis, cam_K, gt_rotation, gt_translation, axis_length=0.08, thickness=2, color_axes=gt_axes_colors)
 
     # Project Prediction (magenta bbox, orange axes)
     pred_bbox_2d = project_bbox_corners(object_id, pred_rotation, pred_translation, cam_K)
-    img_vis = draw_3d_bbox(img_vis, pred_bbox_2d, color=(255, 0, 255), thickness=2)
+    img_vis = draw_3d_bbox(img_vis, pred_bbox_2d, color=(255, 0, 255), thickness=2) # Magenta in BGR
     # Axes color for prediction: orange/yellow shades
-    pred_axes_colors = {'x': (255, 128, 0), 'y': (255, 255, 0), 'z': (255, 128, 128)}
+    pred_axes_colors = {'x': (0, 128, 255), 'y': (255, 0, 255), 'z': (0, 0, 255)} # Orange, Magenta, Red
     img_vis = draw_3d_axes(img_vis, cam_K, pred_rotation, pred_translation, axis_length=0.08, thickness=2, color_axes=pred_axes_colors)
 
     # Add legend
-    cv2.putText(img_vis, 'GT: bbox cyan, axes blue/cyan', (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-    cv2.putText(img_vis, 'Pred: bbox magenta, axes orange/yellow', (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 200, 0), 2)
+    cv2.putText(img_vis, 'GT: bbox cyan, axes blue/cyan', (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+    cv2.putText(img_vis, 'Pred: bbox magenta, axes orange/magenta', (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
     return img_vis
 
 def get_image(image_path: str):
@@ -340,6 +341,10 @@ def get_image(image_path: str):
     image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
     return image_rgb
 
+import random
+import matplotlib.pyplot as plt
+import math
+
 def get_image_from_sample(sample: dict):
     """
     Loads the RGB image from a dataset sample dictionary.
@@ -352,3 +357,52 @@ def get_image_from_sample(sample: dict):
     root_dir = config.dataset_root
     img_path = path.join(root_dir, "data", f"{sample['object_id']:02d}", "rgb", f"{sample['img_id']:04d}.png")
     return get_image(img_path)
+
+def visualize_random_samples(model, dataset, device, inference_func, gt_func, num_samples=5, model_name='model'):
+    samples = random.sample(range(len(dataset)), num_samples)
+
+    batch = [dataset[i] for i in samples]
+
+    if isinstance(model, tuple):
+        for m in model:
+            m.eval()
+    else:
+        model.eval()
+
+    pred_rotations, pred_translations = inference_func(model, device, batch)
+    pred_rotations = pred_rotations.cpu().numpy()
+    pred_translations = pred_translations.cpu().numpy()
+
+    gt_rotations, gt_translations = gt_func(device, batch)
+    gt_rotations = gt_rotations.cpu().numpy()
+    gt_translations = gt_translations.cpu().numpy()
+
+    ncols = min(num_samples, 3)
+    nrows = math.ceil(num_samples / ncols)
+
+    fig, axes = plt.subplots(nrows, ncols, figsize=(15, 5), dpi=120, constrained_layout=True)
+
+    # Batch num_samples images
+    for i, idx in enumerate(samples):
+        img_path = batch[i]['img_path']
+        image_rgb = cv2.imread(str(img_path))
+        image_rgb = cv2.cvtColor(image_rgb, cv2.COLOR_BGR2RGB)
+
+        img_vis = visualize_pose_comparison(
+            image_rgb,
+            object_id=batch[i]['object_id'],
+            cam_K=batch[i]['cam_K'].numpy(),
+            gt_rotation=gt_rotations[i],
+            gt_translation=gt_translations[i],
+            pred_rotation=pred_rotations[i],
+            pred_translation=pred_translations[i]
+        )
+
+        img_vis_rgb = img_vis
+        ax = axes[i]
+
+        ax.imshow(img_vis_rgb)
+        ax.axis('off')
+        ax.set_title(f"Sample {idx}", fontsize=10)
+    fig.suptitle(f"Pose Estimation - {model_name}")
+    plt.show()
