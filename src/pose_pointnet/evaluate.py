@@ -12,6 +12,7 @@ import os
 import pandas as pd
 import open3d as o3d
 import trimesh
+from tqdm import tqdm
 from collections import defaultdict
 from scipy.spatial.transform import Rotation as R
 from torch.utils.data import DataLoader
