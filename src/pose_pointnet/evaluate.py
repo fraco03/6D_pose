@@ -270,6 +270,26 @@ def evaluate_POINTNET_ICP(model_path, dataset_root, output_path, device="cuda"):
             mesh_cache[obj_id], 
             target_pts_cam      
         )
+        
+        # --- C. Calcolo Metriche ---
+        metric_func = compute_ADDs_metric_quaternion if obj_id in SYMMETRIC_IDS else compute_ADD_metric_quaternion
+        
+        err_pn = metric_func(
+            mesh_cache[obj_id], gt_q[0], gt_t[0], pred_q_np, pred_t_abs_np
+        )
+        
+        err_icp = metric_func(
+            mesh_cache[obj_id], gt_q[0], gt_t[0], refined_q, refined_t
+        )
+        
+        results.append({
+            "Object_ID": obj_id,
+            "Name": id_to_name[obj_id],
+            "Diameter_m": diameters[obj_id],
+            "PN_Error_m": err_pn,
+            "ICP_Error_m": err_icp,
+            "Improvement_m": err_pn - err_icp
+        })
 
         # === SMART DEBUG VISUALIZATION ===
         # Vogliamo vedere il grafico SOLO se:
@@ -302,26 +322,6 @@ def evaluate_POINTNET_ICP(model_path, dataset_root, output_path, device="cuda"):
             )
             debug_count += 1
         # =================================
-        
-        # --- C. Calcolo Metriche ---
-        metric_func = compute_ADDs_metric_quaternion if obj_id in SYMMETRIC_IDS else compute_ADD_metric_quaternion
-        
-        err_pn = metric_func(
-            mesh_cache[obj_id], gt_q[0], gt_t[0], pred_q_np, pred_t_abs_np
-        )
-        
-        err_icp = metric_func(
-            mesh_cache[obj_id], gt_q[0], gt_t[0], refined_q, refined_t
-        )
-        
-        results.append({
-            "Object_ID": obj_id,
-            "Name": id_to_name[obj_id],
-            "Diameter_m": diameters[obj_id],
-            "PN_Error_m": err_pn,
-            "ICP_Error_m": err_icp,
-            "Improvement_m": err_pn - err_icp
-        })
 
     # 5. Aggregazione Risultati
     df = pd.DataFrame(results)
