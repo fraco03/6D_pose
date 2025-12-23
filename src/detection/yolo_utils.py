@@ -613,6 +613,7 @@ def create_student_dataset_final(dest_root, model_path, train_data_input, collag
             
         stats['real'] += 1
 
+    '''
     # =========================================================
     # PART B: MERGE SYNTHETIC COLLAGES
     # =========================================================
@@ -628,6 +629,7 @@ def create_student_dataset_final(dest_root, model_path, train_data_input, collag
             if os.path.exists(os.path.join(src_synth_lbl, lbl_name)):
                 shutil.copy(os.path.join(src_synth_lbl, lbl_name), os.path.join(dest_lbl_dir, lbl_name))
             stats['collage'] += 1
+    '''
 
     # =========================================================
     # PART C: YAML CREATION (FIXED)
@@ -652,5 +654,5 @@ names: {class_names}
     print(f"\n✅ Student Dataset Completed!")
     print(f"   🖼️  Real Processed: {stats['real']}")
     print(f"   🤖 Pseudo-Labels Added: {stats['pseudo']}")
-    print(f"   🎨 Collages Merged: {stats['collage']}")
+    #print(f"   🎨 Collages Merged: {stats['collage']}")
     print(f"   📄 Config: {os.path.join(dest_root, 'student.yaml')}")
