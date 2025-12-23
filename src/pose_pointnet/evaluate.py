@@ -271,19 +271,37 @@ def evaluate_POINTNET_ICP(model_path, dataset_root, output_path, device="cuda"):
             target_pts_cam      
         )
 
-        # === DEBUG VISUALIZATION CORRETTO ===
-        # Visualizziamo solo il primo elemento assoluto (batch_idx == 0)
-        if batch_idx == 0: 
-            print("Visualizing ICP effect...")
+        # === SMART DEBUG VISUALIZATION ===
+        # Vogliamo vedere il grafico SOLO se:
+        # 1. È l'oggetto IRON (ID 13) - Per capire il problema della simmetria
+        # 2. OPPURE l'ICP ha peggiorato l'errore di più di 1cm (Divergenza)
+        
+        is_iron = (obj_id == 13)
+        icp_worsened = (err_icp > err_pn + 0.01) # Peggiorato di > 1cm
+        
+        # Mettiamo un contatore globale fuori dal loop se non c'è, 
+        # oppure usiamo un trucco statico per non stampare 1000 grafici
+        if "debug_count" not in locals(): debug_count = 0
+        
+        if (is_iron or icp_worsened) and debug_count < 3:
+            print(f"\n🔍 DEBUGGING: Object {id_to_name[obj_id]} (ID {obj_id})")
+            print(f"   PN Error: {err_pn*100:.2f} cm | ICP Error: {err_icp*100:.2f} cm")
+            
+            if icp_worsened:
+                print("   ⚠️ WARNING: ICP made it WORSE! (Divergence)")
+            if is_iron:
+                print("   ⚠️ FOCUS: Checking Iron orientation")
+
             debug_icp_visual(
                 obj_id, 
-                mesh_cache[obj_id], 
-                target_pts_cam,     
-                pred_q_np, pred_t_abs_np, 
-                refined_q, refined_t,     
-                gt_q[0], gt_t[0]          
+                mesh_cache[obj_id], # Source (Canonical)
+                target_pts_cam,     # Target (Observed)
+                pred_q_np, pred_t_abs_np, # PointNet (ROSSO)
+                refined_q, refined_t,     # ICP (BLU)
+                gt_q[0], gt_t[0]          # GT (VERDE)
             )
-        # ====================================
+            debug_count += 1
+        # =================================
         
         # --- C. Calcolo Metriche ---
         metric_func = compute_ADDs_metric_quaternion if obj_id in SYMMETRIC_IDS else compute_ADD_metric_quaternion
