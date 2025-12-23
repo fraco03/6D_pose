@@ -29,11 +29,12 @@ class DenseFusionLineModDataset(Dataset):
         self,
         root_dir: str,
         split: str = 'train',
-        num_points: int = 1024,  # Fixed number of points (usually 1000 for DenseFusion)
+        num_points: int = 1024,
         object_ids: Optional[List[int]] = None,
         train_ratio: float = 0.8,
         random_seed: int = 42,
-        verbose: bool = True
+        verbose: bool = True,
+        resize_shape: tuple = (128, 128) # Nuova dimensione fissa per i crop RGB
     ):
         self.root_dir = Path(root_dir)
         self.data_dir = self.root_dir / 'data'
@@ -41,11 +42,12 @@ class DenseFusionLineModDataset(Dataset):
         self.num_points = num_points
         self.train_ratio = train_ratio
         self.random_seed = random_seed
+        self.resize_shape = resize_shape 
 
         self.object_ids = object_ids if object_ids is not None else self.VALID_OBJECTS
         self.id_to_class = {obj_id: self.CLASS_NAMES[i] for i, obj_id in enumerate(self.VALID_OBJECTS)}
         
-        # Standard LineMOD image dimensions for boundary checks
+        # Standard LineMOD image dimensions
         self.input_standard_dimensions = (640, 480) 
         
         # Load cached configuration
@@ -59,31 +61,23 @@ class DenseFusionLineModDataset(Dataset):
             print(f"   Split: {self.split} (Ratio: {self.train_ratio})")
             print(f"   Num Points: {self.num_points}")
             print(f"   Total samples: {len(self.samples)}")
+            print(f"   RGB Resize Shape: {self.resize_shape}")
 
     def _build_index(self) -> List[Dict]:
-        """
-        Builds the list of valid samples by scanning the dataset directory.
-        It performs train/test splitting and filters out missing files.
-        """
         samples = []
-
         for obj_id in self.object_ids:
             try:
                 gt_data = self.config.get_gt_data(obj_id)
                 info_data = self.config.get_camera_info(obj_id)
             except FileNotFoundError:
-                print(f"Warning: Data files not found for object {obj_id}")
                 continue
 
             all_img_ids = sorted([int(k) for k in gt_data.keys()])
-            if not all_img_ids:
-                continue
+            if not all_img_ids: continue
 
-            # Deterministic Shuffle
             rng = random.Random(self.random_seed)
             rng.shuffle(all_img_ids)
 
-            # Train/Test Split
             split_idx = int(len(all_img_ids) * self.train_ratio)
             if self.split == 'train':
                 selected_ids = all_img_ids[:split_idx]
@@ -96,52 +90,36 @@ class DenseFusionLineModDataset(Dataset):
             obj_path = self.data_dir / obj_folder
 
             for img_id_int in selected_ids:
-                # Robust key access (handle string vs int keys in YAML)
                 annotations = gt_data.get(img_id_int) or gt_data.get(str(img_id_int)) or gt_data.get(f"{img_id_int:04d}")
-                if not annotations:
-                    continue
+                if not annotations: continue
 
-                # We check for depth path
                 depth_path = obj_path / 'depth' / f"{img_id_int:04d}.png"
-                if not depth_path.exists():
-                    continue
+                if not depth_path.exists(): continue
                 
-                # Check for RGB path as well for DenseFusion
                 rgb_path = obj_path / 'rgb' / f"{img_id_int:04d}.png"
-                if not rgb_path.exists():
-                    continue
+                if not rgb_path.exists(): continue
 
                 for ann in annotations:
                     actula_obj_id = int(ann['obj_id'])
-                    # Ensure the annotation belongs to the current object
-                    if actula_obj_id != obj_id:
-                        continue
+                    if actula_obj_id != obj_id: continue
 
-                    # Extract Pose
                     rotation_matrix = np.array(ann['cam_R_m2c']).reshape(3, 3)
                     translation_vector = np.array(ann['cam_t_m2c'])
                     quaternion_rotation = convert_rotation_to_quaternion(rotation_matrix)
 
                     x, y, w, h = map(int, ann['obj_bb'])
-                    
-                    # Basic BBox Validation
                     if w <= 0 or h <= 0: continue
                     
-                    # Clip bbox to image boundaries
                     img_w, img_h = self.input_standard_dimensions
                     x = max(0, x)
                     y = max(0, y)
                     w = min(w, img_w - x)
                     h = min(h, img_h - y)
-                    
                     if w <= 0 or h <= 0: continue
 
                     bbox = [x, y, w, h]
-
-                    # Retrieve Camera Intrinsics
                     cam_info = info_data.get(img_id_int) or info_data.get(str(img_id_int)) or info_data.get(f"{img_id_int:04d}")
                     if cam_info is None: continue
-
                     cam_K = np.array(cam_info['cam_K']).reshape(3, 3)
 
                     sample = {
@@ -149,130 +127,126 @@ class DenseFusionLineModDataset(Dataset):
                         'class_idx': self.id_to_class[actula_obj_id],
                         'img_id': img_id_int,
                         'depth_path': depth_path,
-                        'rgb_path': rgb_path, # Added RGB path
+                        'rgb_path': rgb_path,
                         'rotation': quaternion_rotation,
-                        'translation': translation_vector / 1000.0, # Convert mm to METERS
+                        'translation': translation_vector / 1000.0,
                         'bbox': bbox,
                         'cam_K': cam_K
                     }
                     samples.append(sample)
-
         return samples
 
     def __len__(self) -> int:
         return len(self.samples)
 
     def __getitem__(self, idx: int) -> Dict:
-        """
-        Loads Depth AND RGB, converts to 3D Point Cloud, 
-        samples points and corresponding pixels for DenseFusion.
-        """
         sample = self.samples[idx]
         
-        # 1. Load Depth Map (usually 16-bit PNG in mm)
         depth_map = cv2.imread(str(sample['depth_path']), cv2.IMREAD_UNCHANGED)
-        
-        # 1.1 Load RGB Image
         rgb_map = cv2.imread(str(sample['rgb_path']))
         
         if depth_map is None or rgb_map is None:
             return self.__getitem__((idx + 1) % len(self))
             
-        # Convert RGB to correct format
         rgb_map = cv2.cvtColor(rgb_map, cv2.COLOR_BGR2RGB)
 
-        # 2. Crop using Bounding Box
         x, y, w, h = map(int, sample['bbox'])
         depth_crop = depth_map[y:y+h, x:x+w]
         rgb_crop = rgb_map[y:y+h, x:x+w]
         
-        # 3. Back-projection (2D Pixels -> 3D Coordinates)
         cam_K = sample['cam_K']
         fx, fy = cam_K[0, 0], cam_K[1, 1]
         cx, cy = cam_K[0, 2], cam_K[1, 2]
         
-        # Create a grid of pixel coordinates (u, v) relative to the crop
+        # Grid creation
         rows, cols = depth_crop.shape
         c, r = np.meshgrid(np.arange(cols), np.arange(rows))
         
-        # Convert to global image coordinates
         u_vals = c + x
         v_vals = r + y
         
-        # Create a mask for valid pixels (depth > 0)
         valid_mask = depth_crop > 0
-        
-        # Fallback if the crop contains no valid depth info
         if not np.any(valid_mask):
              return self.__getitem__((idx + 1) % len(self))
         
-        # Extract valid values
-        z_vals = depth_crop[valid_mask] / 1000.0 # Convert mm -> METERS
+        z_vals = depth_crop[valid_mask] / 1000.0
         u_vals = u_vals[valid_mask]
         v_vals = v_vals[valid_mask]
         
-        # --- DENSEFUSION MODIFICATION: KEEP TRACK OF INDICES ---
-        # We need to know which pixels in the flattened crop correspond to the points.
-        # r, c are indices in the crop. Flattened index = r * width + c
-        flat_indices = r * cols + c
-        valid_flat_indices = flat_indices[valid_mask]
+        # --- Handling Indices ---
+        # Salviamo le coordinate U, V originali dei punti validi
+        # prima di fare qualsiasi resize, così possiamo mappare
+        # il punto 3D al pixel corretto nell'immagine resizata.
         
-        # Apply Inverse Pinhole Camera model
+        # Coordinate nel crop originale (non globali)
+        u_crop = c[valid_mask]
+        v_crop = r[valid_mask]
+        
+        # Back projection
         x_vals = (u_vals - cx) * z_vals / fx
         y_vals = (v_vals - cy) * z_vals / fy
-        
-        # Stack into a Point Cloud (N_valid, 3)
         points = np.stack([x_vals, y_vals, z_vals], axis=1).astype(np.float32)
         
-        # 4. Sampling (Ensure fixed number of points)
+        # Sampling
         num_valid_points = points.shape[0]
-        
         if num_valid_points >= self.num_points:
-            # If we have too many points, sample N without replacement
             choice_idx = np.random.choice(num_valid_points, self.num_points, replace=False)
         else:
-            # If we have too few, sample N with replacement (padding)
             choice_idx = np.random.choice(num_valid_points, self.num_points, replace=True)
             
-        points = points[choice_idx, :] # Shape: (num_points, 3)
+        points = points[choice_idx, :]
         
-        # Select the corresponding indices in the flattened RGB crop
-        choose = valid_flat_indices[choice_idx] 
+        # Prendiamo le coordinate pixel nel crop originale corrispondenti ai punti scelti
+        u_chosen = u_crop[choice_idx] # X nel crop
+        v_chosen = v_crop[choice_idx] # Y nel crop
+
+        # --- RGB RESIZING (CRITICAL FIX) ---
+        # 1. Resize the RGB crop to fixed dimensions
+        orig_h, orig_w = rgb_crop.shape[:2]
+        target_h, target_w = self.resize_shape
+        rgb_resized = cv2.resize(rgb_crop, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
         
-        # 5. Normalization / Centering
-        centroid = np.mean(points, axis=0) # (3,)
+        # 2. Recalculate indices for the resized image
+        # Scala le coordinate dei pixel selezionati
+        scale_x = target_w / orig_w
+        scale_y = target_h / orig_h
+        
+        u_resized = (u_chosen * scale_x).astype(np.int32)
+        v_resized = (v_chosen * scale_y).astype(np.int32)
+        
+        # Clip per sicurezza (evita indici fuori bordo per arrotondamenti)
+        u_resized = np.clip(u_resized, 0, target_w - 1)
+        v_resized = np.clip(v_resized, 0, target_h - 1)
+        
+        # Calcola gli indici flat per Gather nell'immagine resizata
+        # Indice = y * width + x
+        choose = v_resized * target_w + u_resized
+
+        # Normalization
+        centroid = np.mean(points, axis=0)
         points_centered = points - centroid
         
-        # 6. Target Preparation
-        gt_translation = sample['translation'] # (3,) in Meters
+        gt_translation = sample['translation']
         t_residual = gt_translation - centroid
         
-        # Prepare RGB Tensor (Channels First, Normalized 0-1)
-        # Transpose (H, W, 3) -> (3, H, W)
-        rgb_tensor = torch.from_numpy(rgb_crop).permute(2, 0, 1).float() / 255.0
+        # Prepare Tensor
+        rgb_tensor = torch.from_numpy(rgb_resized).permute(2, 0, 1).float() / 255.0
 
-        # Return PyTorch Tensors
         return {
-            # Standard PointNet Inputs
-            'points': torch.from_numpy(points_centered).T, # (3, N)
-            
-            # --- DenseFusion Inputs ---
-            'rgb': rgb_tensor, # (3, H_crop, W_crop)
-            'choose': torch.from_numpy(choose).long(), # (N,) Indices for gathering features
-            # --------------------------
-            
+            'points': torch.from_numpy(points_centered).T,
+            'rgb': rgb_tensor,
+            'choose': torch.from_numpy(choose).long(),
             'centroid': torch.from_numpy(centroid).float(),
             'rotation': torch.from_numpy(sample['rotation']).float(),
             't_residual': torch.from_numpy(t_residual).float(),
             'gt_translation': torch.from_numpy(gt_translation).float(),
             'object_id': sample['object_id'],
-            'class_idx': self.id_to_class.get(sample['object_id'], 'unknown') ,
+            'class_idx': self.id_to_class.get(sample['object_id'], 'unknown'),
             'img_id': sample['img_id'],
             'cam_K': torch.from_numpy(cam_K).float(),
-            'img_path': str(sample['rgb_path']) # Updated to use the stored path
+            'img_path': str(sample['rgb_path'])
         }
     
     def get_image_path(self, idx: int):
-        """Get the image path for a given sample index."""
         sample = self.samples[idx]
         return str(sample['rgb_path'])
