@@ -96,9 +96,9 @@ def _refine_with_icp(pred_q, pred_t, source_points, target_points):
     # Assume PointNet outputs (w, x, y, z). Scipy wants (x, y, z, w).
     # We do a roll just in case, if the error is high try removing it.
     try:
-        # q_scipy = np.roll(pred_q, -1) # w,x,y,z -> x,y,z,w
+        q_scipy = np.roll(pred_q, -1) # w,x,y,z -> x,y,z,w
         # If you use standard utilities it's usually handled, here we use raw scipy:
-        rot_mat = R.from_quat(pred_q).as_matrix() # try first without roll
+        rot_mat = R.from_quat(q_scipy).as_matrix() # try first without roll
     except ValueError:
         rot_mat = np.eye(3)
 
