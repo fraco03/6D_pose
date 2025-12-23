@@ -321,6 +321,8 @@ def create_teacher_dataset_final(source_root, dest_root, bg_cache_dir, num_colla
     
     # Statistics
     stats = {'train_02_real': 0, 'train_other_cached': 0, 'test_real': 0}
+    train_subset_all = []
+    test_subset_all = []
 
     for folder_str in tqdm(obj_folders, desc="Processing Classes"):
         class_id = id_map[int(folder_str)]
@@ -395,6 +397,9 @@ def create_teacher_dataset_final(source_root, dest_root, bg_cache_dir, num_colla
         
         train_subset = all_images[:split_idx]
         test_subset = all_images[split_idx:]
+        
+        train_subset_all.extend(train_subset)   
+        test_subset_all.extend(test_subset)
         
         # --- HANDLE TRAINING SUBSET (80%) ---
         if is_class_02:
@@ -500,7 +505,7 @@ def create_teacher_dataset_final(source_root, dest_root, bg_cache_dir, num_colla
     with open('./linemod.yaml', 'w') as f:
         f.write(f"path: {dest_root}\ntrain: images/train\nval: images/test\ntest: images/test\nnc: {len(class_names)}\nnames: {class_names}")
         
-    return train_subset, test_subset
+    return train_subset_all, test_subset_all
 
 def create_student_dataset_final(dest_root, model_path, train_data_input, collage_root, conf_threshold=0.8, iou_threshold=0.45):
     """
