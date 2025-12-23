@@ -13,7 +13,9 @@ class FusionLineModDataset(Dataset):
         self.num_points = num_points
         self.augment = augment
         
-        # Mapping oggetti (Standard LineMod)
+        self.list_of_points = []
+        self.list_of_labels = []
+        
         self.id_to_class = {
             1: 'ape', 2: 'benchvise', 4: 'camera', 5: 'can', 6: 'cat',
             8: 'driller', 9: 'duck', 10: 'eggbox', 11: 'glue',
@@ -21,103 +23,78 @@ class FusionLineModDataset(Dataset):
         }
         self.VALID_OBJECTS = list(self.id_to_class.keys())
 
-        # Trasformazioni per l'immagine RGB (Standard per ResNet)
+        # --- LOGICA ORIGINALE DI CARICAMENTO ---
+        # Si fida del fatto che esista un file .txt valido nella root
+        split_file = os.path.join(root_dir, f'{split}.txt')
+        
+        if not os.path.exists(split_file):
+            print(f"❌ Critical Error: Split file not found at {split_file}")
+            # Se manca, provo un fallback comune su Kaggle (nella working directory)
+            fallback_path = os.path.join("/kaggle/working", f'{split}.txt')
+            if os.path.exists(fallback_path):
+                print(f"✅ Found fallback file at {fallback_path}")
+                split_file = fallback_path
+
+        with open(split_file, 'r') as f:
+            file_names = [x.strip() for x in f.readlines()]
+        
+        for line in file_names:
+            # line è tipo "data/01/0000"
+            # Costruiamo il path completo
+            dat_path = os.path.join(root_dir, line + '.dat')
+            
+            # Estraiamo la classe dal path (es. data/01/0000 -> 01)
+            try:
+                # Splitta su '/' e cerca quale parte è un ID valido
+                parts = line.split('/')
+                cls_id = 0
+                for part in parts:
+                    if part.isdigit() and int(part) in self.VALID_OBJECTS:
+                        cls_id = int(part)
+                        break
+            except:
+                continue
+
+            # Se l'oggetto è valido, lo aggiungiamo
+            if cls_id in self.VALID_OBJECTS:
+                # Verifica extra: se il file non esiste in root, forse il txt punta male?
+                if not os.path.exists(dat_path):
+                    # Prova a cercarlo relativo alla root corrente
+                    # A volte i txt hanno path assoluti vecchi
+                    pass 
+                
+                self.list_of_points.append(dat_path)
+                self.list_of_labels.append(cls_id)
+
+        if verbose:
+            print(f"Dataset loaded: {len(self.list_of_points)} items (Split: {split})")
+
+        # --- NUOVO: Trasformazioni Immagine per ResNet ---
         self.img_transform = transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
 
-        # --- COSTRUZIONE INDICE ROBUSTA ---
-        # Usa _build_index per trovare i file ovunque essi siano
-        self.list_of_points, self.list_of_labels = self._build_index(verbose)
-
-    def _build_index(self, verbose):
-        """
-        Scansiona le directory per trovare i file di split e i file .dat corrispondenti.
-        Risolve automaticamente i problemi di percorso (data/ vs root/).
-        """
-        list_of_points = []
-        list_of_labels = []
-        
-        if verbose: print(f"🔍 Building index for split '{self.split}' in: {self.root_dir}")
-
-        # Verifica preliminare struttura cartelle
-        has_data_folder = os.path.exists(os.path.join(self.root_dir, 'data'))
-        base_search_path = os.path.join(self.root_dir, 'data') if has_data_folder else self.root_dir
-
-        for oid in self.VALID_OBJECTS:
-            # Cerca la cartella dell'oggetto: es. .../data/01 o .../1
-            # Proviamo con padding (01) e senza (1)
-            obj_folder_candidates = [
-                os.path.join(base_search_path, f"{oid:02d}"), # 01
-                os.path.join(base_search_path, f"{oid}")      # 1
-            ]
-            
-            obj_folder = None
-            for p in obj_folder_candidates:
-                if os.path.exists(p):
-                    obj_folder = p
-                    break
-            
-            if obj_folder is None:
-                continue # Oggetto non trovato in questa directory
-
-            # Cerca il file split (train.txt / test.txt) dentro la cartella oggetto
-            split_file = os.path.join(obj_folder, f"{self.split}.txt")
-            
-            if not os.path.exists(split_file):
-                continue # File txt mancante per questo oggetto
-                
-            # Leggi i file
-            with open(split_file, 'r') as f:
-                file_names = [x.strip() for x in f.readlines()]
-            
-            added_count = 0
-            for name in file_names:
-                # name potrebbe essere "0000" oppure "data/01/0000"
-                # Puliamo il nome per avere solo il filename base
-                clean_name = name.split('/')[-1] # Prende "0000"
-                
-                # Costruiamo il path assoluto al file .dat
-                dat_path = os.path.join(obj_folder, clean_name + '.dat')
-                
-                if os.path.exists(dat_path):
-                    list_of_points.append(dat_path)
-                    list_of_labels.append(oid)
-                    added_count += 1
-            
-            # Debug per capire se sta trovando roba
-            # if verbose and added_count > 0:
-            #    print(f"   Object {oid:02d}: found {added_count} items")
-
-        if verbose:
-            print(f"✅ Total items loaded: {len(list_of_points)}")
-            if len(list_of_points) == 0:
-                print("❌ ERROR: 0 items loaded. Check if dataset_root points to the folder containing 'data' or the objects.")
-            
-        return list_of_points, list_of_labels
-
     def __len__(self):
         return len(self.list_of_points)
 
     def __getitem__(self, idx):
+        # 1. Carica il file .dat (come prima)
         path = self.list_of_points[idx]
         obj_id = self.list_of_labels[idx]
         
-        # 1. CARICAMENTO DATI GEOMETRICI (.dat)
-        # Usiamo un try-except per evitare crash su file corrotti
         try:
             with open(path, 'rb') as f:
                 data = cPickle.load(f)
-        except Exception as e:
-            # Se fallisce, prendiamo un altro indice a caso
+        except Exception:
+            # Se il file è corrotto, prendine un altro a caso
             return self.__getitem__(np.random.randint(0, len(self)))
-
-        # 2. BOUNDING BOX (Serve per ritagliare l'immagine)
+        
+        # 2. Estrai Bounding Box (Serve per ritagliare l'immagine)
         try:
             rmin, rmax, cmin, cmax = data['rmin'], data['rmax'], data['cmin'], data['cmax']
         except KeyError:
-            # Fallback usando la maschera
+            # Fallback se mancano i dati bbox
             mask = data.get('mask')
             if mask is not None:
                 rows, cols = np.where(mask)
@@ -126,9 +103,8 @@ class FusionLineModDataset(Dataset):
             else:
                 rmin, rmax, cmin, cmax = 0, 480, 0, 640
 
-        # 3. PUNTI 3D (Logica PointNet)
-        points = data['cld_rgb_nrm'][:, :3] # XYZ
-        
+        # 3. Punti 3D (Tuo codice originale)
+        points = data['cld_rgb_nrm'][:, :3]
         if self.augment:
             noise = np.random.normal(0, 0.005, points.shape)
             points = points + noise
@@ -137,42 +113,41 @@ class FusionLineModDataset(Dataset):
         points = points[choice, :]
         points_tensor = torch.from_numpy(points.astype(np.float32)).transpose(0, 1)
 
-        # 4. RGB IMAGE LOADING & CROP (Logica DenseFusion)
-        # Il path è assoluto al file .dat: .../data/01/0000.dat
+        # 4. --- NUOVO: Carica e Ritaglia Immagine RGB ---
         folder_dir, filename = os.path.split(path) 
         img_basename = filename.replace('.dat', '') # "0000"
         
-        # Cerca l'immagine in vari posti possibili
-        rgb_path_candidates = [
-            os.path.join(folder_dir, 'rgb', img_basename + '.png'), # Standard LineMod: rgb/0000.png
-            os.path.join(folder_dir, img_basename + '.png'),        # Direttamente nella cartella
-            os.path.join(folder_dir, 'rgb', img_basename + '.jpg'), # Formato JPG
+        # Cerchiamo l'immagine .png o .jpg (potrebbe essere in cartella 'rgb' o root)
+        candidates = [
+            os.path.join(folder_dir, 'rgb', img_basename + '.png'),
+            os.path.join(folder_dir, img_basename + '.png'),
+            os.path.join(folder_dir, 'rgb', img_basename + '.jpg'),
             os.path.join(folder_dir, img_basename + '.jpg')
         ]
         
-        image_tensor = torch.zeros((3, 224, 224)) # Default nero (fallback)
+        image_tensor = torch.zeros((3, 224, 224)) # Default nero
         
-        for p in rgb_path_candidates:
-            if os.path.exists(p):
+        for img_path in candidates:
+            if os.path.exists(img_path):
                 try:
-                    rgb_img = Image.open(p).convert("RGB")
-                    # Crop (usando bbox) e Resize
+                    rgb_img = Image.open(img_path).convert("RGB")
+                    # Crop (Ritaglia solo l'oggetto usando la BBox)
                     crop = rgb_img.crop((cmin, rmin, cmax, rmax))
+                    # Resize a 224x224 (Input fisso per ResNet)
                     crop = crop.resize((224, 224))
                     image_tensor = self.img_transform(crop)
-                    break # Trovata!
+                    break
                 except Exception:
                     pass
 
-        # 5. METADATA
+        # 5. Metadata (Originali)
         rot = torch.from_numpy(data['rotation'].astype(np.float32))
         trans = torch.from_numpy(data['translation'].astype(np.float32))
         centroid = torch.from_numpy(data['mean'].astype(np.float32))
 
-        # 6. OUTPUT COMPATIBILE
         return {
-            'points': points_tensor,   # (3, 1024) PointNet
-            'images': image_tensor,    # (3, 224, 224) DenseFusion
+            'points': points_tensor,
+            'images': image_tensor,     # <--- NUOVO CAMPO AGGIUNTO
             'rotation': rot,
             'gt_translation': trans,
             'centroid': centroid,
