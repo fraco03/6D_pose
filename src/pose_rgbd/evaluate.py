@@ -11,7 +11,8 @@ import torch
 def evaluate_RGBD(
         model_path: str,
         dataset_root: str,
-        output_path: str
+        output_path: str,
+        yolo_path: str = None
 ) -> DataFrame:
 
 
@@ -35,7 +36,8 @@ def evaluate_RGBD(
     test_dataset = LineModPoseDepthDataset(
         root_dir=DATASET_ROOT,
         split="test",
-        verbose=False
+        verbose=False,
+        yolo_path=yolo_path
     )
     test_loader = DataLoader(test_dataset, batch_size=128, shuffle=False, num_workers=2)
 

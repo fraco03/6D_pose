@@ -2,6 +2,7 @@ import os
 import cv2
 import numpy as np
 import torch
+import yaml
 import random
 from torch.utils.data import Dataset
 from pathlib import Path
@@ -15,6 +16,7 @@ class DenseFusionLineModDataset(Dataset):
     
     It converts 2D Depth maps into 3D Point Clouds via back-projection,
     loads the corresponding RGB crops, and generates pixel-point correspondence indices.
+    Supports optional YOLO bounding boxes via 'yolo_path'.
     """
 
     VALID_OBJECTS = [1, 2, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15]
@@ -34,7 +36,8 @@ class DenseFusionLineModDataset(Dataset):
         train_ratio: float = 0.8,
         random_seed: int = 42,
         verbose: bool = True,
-        resize_shape: tuple = (128, 128) # Nuova dimensione fissa per i crop RGB
+        resize_shape: tuple = (128, 128), # Fixed size for RGB crops
+        yolo_path: str = None # New param for YOLO results
     ):
         self.root_dir = Path(root_dir)
         self.data_dir = self.root_dir / 'data'
@@ -43,6 +46,7 @@ class DenseFusionLineModDataset(Dataset):
         self.train_ratio = train_ratio
         self.random_seed = random_seed
         self.resize_shape = resize_shape 
+        self.yolo_path = Path(yolo_path) if yolo_path else None
 
         self.object_ids = object_ids if object_ids is not None else self.VALID_OBJECTS
         self.id_to_class = {obj_id: self.CLASS_NAMES[i] for i, obj_id in enumerate(self.VALID_OBJECTS)}
@@ -60,8 +64,13 @@ class DenseFusionLineModDataset(Dataset):
             print(f"✅ Loaded DenseFusionLineModDataset")
             print(f"   Split: {self.split} (Ratio: {self.train_ratio})")
             print(f"   Num Points: {self.num_points}")
+            print(f"   Objects: {self.object_ids} | YOLO Enabled: {self.yolo_path is not None}")
             print(f"   Total samples: {len(self.samples)}")
             print(f"   RGB Resize Shape: {self.resize_shape}")
+
+    def _load_yaml(self, path):
+        with open(path, 'r') as f:
+            return yaml.load(f, Loader=yaml.SafeLoader)
 
     def _build_index(self) -> List[Dict]:
         samples = []
@@ -70,7 +79,20 @@ class DenseFusionLineModDataset(Dataset):
                 gt_data = self.config.get_gt_data(obj_id)
                 info_data = self.config.get_camera_info(obj_id)
             except FileNotFoundError:
+                print(f"Warning: Data files not found for object {obj_id}")
                 continue
+
+            # Load YOLO Data if requested
+            yolo_data = None
+            if self.yolo_path:
+                # Handle potential folder naming ("1" vs "01")
+                yolo_folder = self.yolo_path / f"{obj_id:02d}"
+                if not yolo_folder.exists():
+                    yolo_folder = self.yolo_path / str(obj_id)
+                
+                yolo_file = yolo_folder / 'yolo.yml'
+                if yolo_file.exists():
+                    yolo_data = self._load_yaml(yolo_file)
 
             all_img_ids = sorted([int(k) for k in gt_data.keys()])
             if not all_img_ids: continue
@@ -90,35 +112,57 @@ class DenseFusionLineModDataset(Dataset):
             obj_path = self.data_dir / obj_folder
 
             for img_id_int in selected_ids:
-                annotations = gt_data.get(img_id_int) or gt_data.get(str(img_id_int)) or gt_data.get(f"{img_id_int:04d}")
+                # Robust key access
+                key_str = str(img_id_int)
+                key_pad = f"{img_id_int:04d}"
+
+                annotations = gt_data.get(img_id_int) or gt_data.get(key_str) or gt_data.get(key_pad)
                 if not annotations: continue
 
-                depth_path = obj_path / 'depth' / f"{img_id_int:04d}.png"
-                if not depth_path.exists(): continue
-                
-                rgb_path = obj_path / 'rgb' / f"{img_id_int:04d}.png"
-                if not rgb_path.exists(): continue
+                # Get YOLO Annotations
+                y_anns = None
+                if yolo_data:
+                    y_anns = yolo_data.get(img_id_int) or yolo_data.get(key_str) or yolo_data.get(key_pad)
 
-                for ann in annotations:
+                depth_path = obj_path / 'depth' / f"{img_id_int:04d}.png"
+                rgb_path = obj_path / 'rgb' / f"{img_id_int:04d}.png"
+                
+                if not depth_path.exists() or not rgb_path.exists(): continue
+
+                for i, ann in enumerate(annotations):
                     actula_obj_id = int(ann['obj_id'])
                     if actula_obj_id != obj_id: continue
 
-                    rotation_matrix = np.array(ann['cam_R_m2c']).reshape(3, 3)
-                    translation_vector = np.array(ann['cam_t_m2c'])
-                    quaternion_rotation = convert_rotation_to_quaternion(rotation_matrix)
+                    # --- BBOX SELECTION ---
+                    bbox = ann['obj_bb'] # Default GT
+                    
+                    if y_anns and i < len(y_anns):
+                        # Use YOLO Box
+                        bbox = y_anns[i]['obj_bb']
 
-                    x, y, w, h = map(int, ann['obj_bb'])
+                    x, y, w, h = map(int, bbox)
+                    
+                    # Basic BBox Validation
                     if w <= 0 or h <= 0: continue
                     
+                    # Clip bbox to image boundaries
                     img_w, img_h = self.input_standard_dimensions
                     x = max(0, x)
                     y = max(0, y)
                     w = min(w, img_w - x)
                     h = min(h, img_h - y)
+                    
+                    # Re-check after clipping
                     if w <= 0 or h <= 0: continue
 
-                    bbox = [x, y, w, h]
-                    cam_info = info_data.get(img_id_int) or info_data.get(str(img_id_int)) or info_data.get(f"{img_id_int:04d}")
+                    final_bbox = [x, y, w, h]
+
+                    # Retrieve Metadata
+                    rotation_matrix = np.array(ann['cam_R_m2c']).reshape(3, 3)
+                    translation_vector = np.array(ann['cam_t_m2c'])
+                    quaternion_rotation = convert_rotation_to_quaternion(rotation_matrix)
+
+                    cam_info = info_data.get(img_id_int) or info_data.get(key_str) or info_data.get(key_pad)
                     if cam_info is None: continue
                     cam_K = np.array(cam_info['cam_K']).reshape(3, 3)
 
@@ -130,7 +174,7 @@ class DenseFusionLineModDataset(Dataset):
                         'rgb_path': rgb_path,
                         'rotation': quaternion_rotation,
                         'translation': translation_vector / 1000.0,
-                        'bbox': bbox,
+                        'bbox': final_bbox,
                         'cam_K': cam_K
                     }
                     samples.append(sample)
@@ -174,10 +218,6 @@ class DenseFusionLineModDataset(Dataset):
         v_vals = v_vals[valid_mask]
         
         # --- Handling Indices ---
-        # Salviamo le coordinate U, V originali dei punti validi
-        # prima di fare qualsiasi resize, così possiamo mappare
-        # il punto 3D al pixel corretto nell'immagine resizata.
-        
         # Coordinate nel crop originale (non globali)
         u_crop = c[valid_mask]
         v_crop = r[valid_mask]
@@ -200,26 +240,23 @@ class DenseFusionLineModDataset(Dataset):
         u_chosen = u_crop[choice_idx] # X nel crop
         v_chosen = v_crop[choice_idx] # Y nel crop
 
-        # --- RGB RESIZING (CRITICAL FIX) ---
+        # --- RGB RESIZING ---
         # 1. Resize the RGB crop to fixed dimensions
         orig_h, orig_w = rgb_crop.shape[:2]
         target_h, target_w = self.resize_shape
         rgb_resized = cv2.resize(rgb_crop, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
         
         # 2. Recalculate indices for the resized image
-        # Scala le coordinate dei pixel selezionati
         scale_x = target_w / orig_w
         scale_y = target_h / orig_h
         
         u_resized = (u_chosen * scale_x).astype(np.int32)
         v_resized = (v_chosen * scale_y).astype(np.int32)
         
-        # Clip per sicurezza (evita indici fuori bordo per arrotondamenti)
         u_resized = np.clip(u_resized, 0, target_w - 1)
         v_resized = np.clip(v_resized, 0, target_h - 1)
         
-        # Calcola gli indici flat per Gather nell'immagine resizata
-        # Indice = y * width + x
+        # Choose index = y * width + x
         choose = v_resized * target_w + u_resized
 
         # Normalization

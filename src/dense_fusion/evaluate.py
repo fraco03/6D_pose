@@ -13,7 +13,8 @@ import os
 def evaluate_DENSEFUSION(
         model_path: str,
         dataset_root: str,
-        output_path: str
+        output_path: str,
+        yolo_path: str
 ) -> DataFrame:
     MODEL_PATH = model_path
     DATASET_ROOT = dataset_root
@@ -44,7 +45,8 @@ def evaluate_DENSEFUSION(
     test_dataset = DenseFusionLineModDataset(
         root_dir=DATASET_ROOT,
         split="test",
-        verbose=False
+        verbose=False,
+        yolo_path=yolo_path
     )
     test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False, num_workers=2)
 
