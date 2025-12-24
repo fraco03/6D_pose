@@ -216,3 +216,5 @@ __pycache__/
 
 **/*_final/
 **/*_run/
+
+**/yolo11**/
