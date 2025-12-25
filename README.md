@@ -18,10 +18,10 @@ Here we confront our approaches to other models proposed in the course of the ye
 | FFB6D (CVPR '21)             |  RGB-D   | Full Flow Bidirectional  |      **99.70%**       |
 |                              |          |                          |                       |
 | **Ours**                     |          |                          |                       |
-| **RGB Model (baseline)**         |   RGB    | ResNet-50                |        93.01%         |
-| **RGB-D Model**       |  RGB-D   | RGBD-ResNet-50           |      **98.21%**       |
-| **PointNet**                 |  Depth   | PointNet                 |        89.74%         |
-| **DenseFusion (Repro)**      |  RGB-D   | PointNet + CNN           |        93.81%         |
+| **RGB Model (baseline)**     |   RGB    | ResNet-50                |        94.28%         |
+| **RGB-D Model**              |  RGB-D   | RGBD-ResNet-50           |      **98.40%**       |
+| **PointNet**                 |  Depth   | PointNet                 |        91.77%         |
+| **DenseFusion**      |  RGB-D   | PointNet + CNN           |        93.97%         |
 
 ## Random samples from each 6D prediction model
 
