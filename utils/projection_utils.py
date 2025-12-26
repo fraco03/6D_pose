@@ -358,8 +358,9 @@ def get_image_from_sample(sample: dict):
     img_path = path.join(root_dir, "data", f"{sample['object_id']:02d}", "rgb", f"{sample['img_id']:04d}.png")
     return get_image(img_path)
 
-def visualize_random_samples(model, dataset, device, inference_func, gt_func, num_samples=5, model_name='model'):
-    samples = random.sample(range(len(dataset)), num_samples)
+def visualize_random_samples(model, dataset, device, inference_func, gt_func, num_samples=3, model_name='model', sample_indices: Union[None, list]=None):
+    
+    samples = random.sample(range(len(dataset)), num_samples) if sample_indices is None else sample_indices
 
     batch = [dataset[i] for i in samples]
 

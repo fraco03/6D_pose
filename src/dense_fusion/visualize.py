@@ -8,7 +8,8 @@ def visualize_densefusion_random_samples(
         checkpoint_dir: str,
         dataset_root: str,
         device: str,
-        num_samples: int = 3
+        num_samples: int = 3,
+        sample_indices: list = None
 ):
     # Funzione di inferenza aggiornata per DenseFusion
     def fusion_inference(model, device, batch: list):
@@ -58,5 +59,6 @@ def visualize_densefusion_random_samples(
         inference_func=fusion_inference, # Usa la nuova funzione
         gt_func=gt_func,
         num_samples=num_samples,
-        model_name='DenseFusion'
+        model_name='DenseFusion',
+        sample_indices=sample_indices
     )
