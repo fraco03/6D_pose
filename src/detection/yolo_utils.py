@@ -42,46 +42,41 @@ def load_test_dataset_from_disk(load_path='/kaggle/working/test_data_subset.json
     return data
 
 # CHANGE iou FOR DIFFERENET mAP METRICS
-def calculate_adapted_map50(model_path, test_data_input, iou_thresh=0.5):
+def calculate_adapted_map50(model_path, test_data_input, iou_thresh=0.5, output_csv='evaluation_results.csv'):
     """
-    load data from load_test_dataset_from_disk() and pass it here to
-    Calculate adapted mAP (masked evaluation) using the list of test data dictionary.
+    Calculate adapted mAP (masked evaluation) and save results to CSV.
     
     Strategy:
-    1. Extracts the 'Target Class' from the source file path (e.g., .../01/rgb/.. -> Class 1).
-    2. Filters Ground Truth: Only considers labels belonging to that Target Class.
-    3. Filters Predictions: Only considers predictions of that Target Class.
-    4. Ignores all other objects (avoiding False Positives for unlabelled background objects).
+    1. Extracts 'Target Class' from file path.
+    2. Filters GT and Predictions to strictly match that Target Class.
+    3. Ignores everything else (masked evaluation).
 
     Args:
         model_path (str): Path to trained YOLO model weights.
         test_data_input (list): The GLOBAL_TEST_SUBSET list from Step 1.
         iou_thresh (float): IoU threshold (default 0.5).
+        output_csv (str): Path to save the CSV report.
 
     Returns:
         float: Mean Average Precision (mAP).
     """
     
     # --- CONFIGURATION ---
-    # Must match the training class mapping
     valid_obj_ids = [1, 2, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15]
     class_names = ['ape', 'benchvise', 'camera', 'can', 'cat', 'driller', 'duck', 
                    'eggbox', 'glue', 'holepuncher', 'iron', 'lamp', 'phone']
     
-    # Map Real Folder ID (1, 2...) -> YOLO Class Index (0, 1...)
     id_map = {obj_id: i for i, obj_id in enumerate(valid_obj_ids)}
 
     print(f"⚖️  Computing adapted mAP@{int(iou_thresh*100)} (Masked Evaluation)...")
     model = YOLO(model_path)
     
-    # Data structures for AP calculation per class
-    # class_preds[class_idx] = list of [confidence, is_true_positive (1 or 0)]
+    # class_preds[class_idx] = list of [confidence, is_true_positive]
     class_preds = {i: [] for i in range(len(class_names))} 
     class_total_gt = {i: 0 for i in range(len(class_names))}
 
     # --- HELPER: IoU Calculation ---
     def compute_iou(boxA, boxB):
-        # box: [x1, y1, x2, y2]
         xA = max(boxA[0], boxB[0])
         yA = max(boxA[1], boxB[1])
         xB = min(boxA[2], boxB[2])
@@ -98,21 +93,16 @@ def calculate_adapted_map50(model_path, test_data_input, iou_thresh=0.5):
         src_path = item['src']
         labels_raw = item['labels']
         
-        # 1. DETERMINE TARGET CLASS from File Path
-        # We assume path structure like: .../{folder_id}/rgb/xxxx.png
-        # We split path and find the folder name
+        # 1. DETERMINE TARGET CLASS
         try:
-            # Get parent of parent folder name (assuming .../01/rgb/img.png)
             folder_str = os.path.basename(os.path.dirname(os.path.dirname(src_path)))
             folder_id = int(folder_str)
-            
-            if folder_id not in id_map: continue # Skip if folder is not in our list
-            
+            if folder_id not in id_map: continue 
             target_cls_idx = id_map[folder_id]
         except:
-            continue # Skip if path format is unexpected
+            continue
 
-        # 2. PARSE GROUND TRUTH (Filter by Target Class)
+        # 2. PARSE GT (Filter by Target Class)
         img = cv2.imread(src_path)
         if img is None: continue
         h_img, w_img = img.shape[:2]
@@ -122,9 +112,7 @@ def calculate_adapted_map50(model_path, test_data_input, iou_thresh=0.5):
             parts = list(map(float, lbl.split()))
             cls_id = int(parts[0])
             
-            # ADAPTED STRATEGY: Only keep GT if it matches the folder class
             if cls_id == target_cls_idx:
-                # YOLO format (xc, yc, w, h) normalized -> Absolute (x1, y1, x2, y2)
                 xc, yc, w, h = parts[1], parts[2], parts[3], parts[4]
                 x1 = (xc - w/2) * w_img
                 y1 = (yc - h/2) * h_img
@@ -132,30 +120,24 @@ def calculate_adapted_map50(model_path, test_data_input, iou_thresh=0.5):
                 y2 = (yc + h/2) * h_img
                 gt_boxes.append([x1, y1, x2, y2])
 
-        if not gt_boxes: continue # No relevant object in this image
-
+        if not gt_boxes: continue 
         class_total_gt[target_cls_idx] += len(gt_boxes)
 
         # 3. RUN PREDICTION
-        # conf=0.01 is crucial to get the full Precision-Recall curve
         results = model.predict(img, conf=0.01, verbose=False)
         
         # 4. FILTER PREDICTIONS (Filter by Target Class)
         valid_preds = []
         for box in results[0].boxes:
             p_cls = int(box.cls[0])
-            
-            # ADAPTED STRATEGY: Ignore predictions of other classes
             if p_cls == target_cls_idx:
-                # Get coordinates
-                x, y, w, h = box.xywh[0].tolist() # xywh is absolute center
+                x, y, w, h = box.xywh[0].tolist() 
                 x1, y1 = x - w/2, y - h/2
                 x2, y2 = x + w/2, y + h/2
                 conf = float(box.conf[0])
                 valid_preds.append({'bbox': [x1, y1, x2, y2], 'conf': conf})
 
         # 5. MATCHING (IoU)
-        # Sort predictions by confidence (High -> Low)
         valid_preds.sort(key=lambda x: x['conf'], reverse=True)
         gt_matched = [False] * len(gt_boxes)
         
@@ -163,46 +145,43 @@ def calculate_adapted_map50(model_path, test_data_input, iou_thresh=0.5):
             best_iou = 0
             best_gt_idx = -1
             
-            # Find best overlapping GT
             for idx, gt_box in enumerate(gt_boxes):
                 iou = compute_iou(pred['bbox'], gt_box)
                 if iou > best_iou:
                     best_iou = iou
                     best_gt_idx = idx
             
-            # Check Threshold
             if best_iou >= iou_thresh:
                 if not gt_matched[best_gt_idx]:
-                    # True Positive
-                    class_preds[target_cls_idx].append([pred['conf'], 1])
+                    class_preds[target_cls_idx].append([pred['conf'], 1]) # TP
                     gt_matched[best_gt_idx] = True
                 else:
-                    # False Positive (Duplicate detection)
-                    class_preds[target_cls_idx].append([pred['conf'], 0])
+                    class_preds[target_cls_idx].append([pred['conf'], 0]) # FP (Duplicate)
             else:
-                # False Positive (Low IoU or Background)
-                class_preds[target_cls_idx].append([pred['conf'], 0])
+                class_preds[target_cls_idx].append([pred['conf'], 0]) # FP (Low IoU)
 
-    # --- CALCULATE AP PER CLASS ---
-    print("\n" + "="*60)
+    # --- CALCULATE AP & PREPARE CSV ---
+    print("\n" + "="*65)
     print(f"{'CLASS':<15} | {'AP@' + str(int(iou_thresh*100)):<10} | {'GT Count':<10} | {'Preds Count':<10}")
-    print("-" * 60)
+    print("-" * 65)
     
     aps = []
+    csv_rows = [['Class', f'AP@{int(iou_thresh*100)}', 'GT_Count', 'Preds_Count']] # Header
     
     for cls_idx in range(len(class_names)):
         preds = class_preds[cls_idx]
         total_gt = class_total_gt[cls_idx]
+        c_name = class_names[cls_idx]
         
         if total_gt == 0:
-            print(f"{class_names[cls_idx]:<15} | {'N/A':<10} | {0:<10} | {len(preds)}")
+            print(f"{c_name:<15} | {'N/A':<10} | {0:<10} | {len(preds)}")
+            csv_rows.append([c_name, 'N/A', 0, len(preds)])
             continue
             
         if not preds:
             ap = 0.0
         else:
             preds = np.array(preds)
-            # sort by confidence descending (already roughly sorted but good safety)
             sort_ind = np.argsort(-preds[:, 0])
             preds = preds[sort_ind]
             
@@ -212,26 +191,36 @@ def calculate_adapted_map50(model_path, test_data_input, iou_thresh=0.5):
             rec = tp / total_gt
             prec = tp / (tp + fp + 1e-16)
             
-            # 11-point interpolation or AUC (Area Under Curve)
-            # We use AUC integration with padding
+            # AUC Calculation (Standard 11-point / VOC approx)
             mrec = np.concatenate(([0.0], rec, [1.0]))
             mpre = np.concatenate(([0.0], prec, [0.0]))
             
-            # Monotonically decreasing precision
             for i in range(len(mpre) - 1, 0, -1):
                 mpre[i - 1] = np.maximum(mpre[i - 1], mpre[i])
                 
-            # Area under curve
             i = np.where(mrec[1:] != mrec[:-1])[0]
             ap = np.sum((mrec[i + 1] - mrec[i]) * mpre[i + 1])
             
         aps.append(ap)
-        print(f"{class_names[cls_idx]:<15} | {ap:.4f}     | {total_gt:<10} | {len(preds)}")
+        print(f"{c_name:<15} | {ap:.4f}     | {total_gt:<10} | {len(preds)}")
+        csv_rows.append([c_name, round(ap, 4), total_gt, len(preds)])
     
     mean_ap = np.mean(aps) if aps else 0.0
-    print("-" * 60)
+    print("-" * 65)
     print(f"Adapted mAP@{int(iou_thresh*100)}  | {mean_ap:.4f}")
-    print("="*60)
+    print("="*65)
+    
+    # Add Mean AP to CSV
+    csv_rows.append(['mAP', round(mean_ap, 4), '', ''])
+
+    # --- WRITE CSV ---
+    try:
+        with open(output_csv, mode='w', newline='') as file:
+            writer = csv.writer(file)
+            writer.writerows(csv_rows)
+        print(f"✅ Results saved to: {output_csv}")
+    except Exception as e:
+        print(f"❌ Error saving CSV: {e}")
     
     return mean_ap
    
