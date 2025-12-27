@@ -41,7 +41,7 @@ class RotationLoss(nn.Module):
         return loss.mean()
     
 class MultiObjectPointMatchingLoss(nn.Module):
-    def __init__(self, all_model_points):
+    def __init__(self, all_model_points: torch.Tensor):
         """
         Args:
             all_model_points (torch.Tensor): Shape (Num_Classes, N, 3).
@@ -117,21 +117,20 @@ class TranslationLoss(nn.Module):
             pred_trans: [Batch, 3] -> (dx, dy, z)
             gt_trans:   [Batch, 3] -> (dx, dy, z)
         """
-        # Separiamo le componenti
-        pred_xy = pred_trans[:, :2] # Solo dx, dy
-        pred_z  = pred_trans[:, 2]  # Solo z
+        # Separate components
+        pred_xy = pred_trans[:, :2] # dx, dy
+        pred_z  = pred_trans[:, 2]  # z
         
         gt_xy = gt_trans[:, :2]
         gt_z  = gt_trans[:, 2]
         
-        # 1. Calcola Loss XY (Pixel offsets)
+        # 1. Loss XY (Pixel offsets)
         loss_xy = self.loss_fn(pred_xy, gt_xy)
         
-        # 2. Calcola Loss Z (Depth in meters)
+        # 2. Loss Z (Depth)
         loss_z = self.loss_fn(pred_z, gt_z)
         
-        # 3. Somma Pesata
-        # Moltiplichiamo loss_z per dare priorità alla profondità
+        # 3. Weighted Sum
         total_loss = loss_xy + (self.z_weight * loss_z)
         
         return total_loss
@@ -180,26 +179,3 @@ class CombinedPoseLoss(nn.Module):
         # We return all three so you can print them separately in the progress bar
         return total_loss, l_rot, l_trans
     
-
-class UnifiedPoseLoss(nn.Module):
-    def __init__(self, w_rot=1.0, w_trans=2.0):
-        super().__init__()
-        self.w_rot = w_rot
-        self.w_trans = w_trans
-        
-        # Fallback loss rotazione (Geodesic)
-        self.rot_loss_fn = RotationLoss() 
-        # Translation loss (SmoothL1 è robusta agli outlier)
-        self.trans_loss_fn = nn.SmoothL1Loss(beta=1.0)
-
-    def forward(self, pred_rot, gt_rot, pred_trans, gt_trans):
-        
-        # 1. Translation Loss 
-        # Separate XY and Z components
-        loss_xy = self.trans_loss_fn(pred_trans[:, :2], gt_trans[:, :2])
-        loss_z = self.trans_loss_fn(pred_trans[:, 2], gt_trans[:, 2])
-        l_trans = loss_xy + (3.0 * loss_z) # Weight Z more
-        l_rot = self.rot_loss_fn(pred_rot, gt_rot)
-
-        total_loss = (self.w_rot * l_rot) + (self.w_trans * l_trans)
-        return total_loss, l_rot, l_trans

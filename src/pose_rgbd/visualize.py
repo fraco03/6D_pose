@@ -9,7 +9,8 @@ def visualize_RGBD_random_samples(
         checkpoint_dir: str,
         dataset_root: str,
         device: str,
-        num_samples: int = 3
+        num_samples: int = 3,
+        sample_indices: list = None
 ):
     def rgbd_inference(model, device, batch: list):
         rgb = torch.stack([sample['image'] for sample in batch]).to(device)
@@ -50,5 +51,6 @@ def visualize_RGBD_random_samples(
         inference_func=rgbd_inference, 
         gt_func=gt_func,
         num_samples=num_samples,
-        model_name='RGB-D'
+        model_name='RGB-D',
+        sample_indices=sample_indices
     )

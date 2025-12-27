@@ -73,7 +73,7 @@ class MultiObjectPointMatchingLoss(nn.Module):
                                         (es. [8, 10] per eggbox e glue in LineMOD).
         """
         super(MultiObjectPointMatchingLoss, self).__init__()
-        # Registriamo i punti come buffer (non sono parametri da imparare, ma parte dello stato)
+        # Register buffer
         self.register_buffer('point_bank', all_model_points)
         self.symmetric_ids = set(symmetric_class_ids)
 
@@ -81,10 +81,9 @@ class MultiObjectPointMatchingLoss(nn.Module):
         """
         Converte quaternioni (w, x, y, z) in matrici di rotazione 3x3.
         """
-        # Normalizzazione di sicurezza
+        # Security normalization
         quats = quats / (torch.norm(quats, dim=1, keepdim=True) + 1e-8)
         
-        # Assumiamo ordine (w, x, y, z) - Standard PyTorch/Eigen
         w, x, y, z = quats[:, 0], quats[:, 1], quats[:, 2], quats[:, 3]
         
         x2, y2, z2 = x*x, y*y, z*z
