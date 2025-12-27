@@ -11,19 +11,19 @@ def visualize_densefusion_random_samples(
         num_samples: int = 3,
         sample_indices: list = None
 ):
-    # Funzione di inferenza aggiornata per DenseFusion
+    # Inference function for DenseFusion model
     def fusion_inference(model, device, batch: list):
-        # 1. Stack dei dati
+        # 1. Stack
         points = torch.stack([sample['points'] for sample in batch]).to(device)
-        images = torch.stack([sample['rgb'] for sample in batch]).to(device) # IMPORTANTE: Carica RGB
+        images = torch.stack([sample['rgb'] for sample in batch]).to(device) 
         centroids = torch.stack([sample['centroid'] for sample in batch]).to(device)
 
         model.eval()
         with torch.no_grad():
-            # 2. Forward pass con ENTRAMBI gli input
+            # 2. Forward pass
             pred_rot, pred_t_res = model(points, images)
 
-        # 3. Ricostruzione traslazione assoluta
+        # 3. Absolute translation
         pred_trans = centroids + pred_t_res
 
         return pred_rot, pred_trans
@@ -34,29 +34,27 @@ def visualize_densefusion_random_samples(
         return gt_rot, gt_trans
     
 
-    # 1. Usa il Dataset corretto (DenseFusion) che restituisce 'rgb'
+    # 1. Insantiate dataset
     test_dataset = DenseFusionLineModDataset(
         root_dir=dataset_root,
         split="test",
         verbose=False,
-        # Assicurati che il resize corrisponda a quello usato in training se necessario, 
-        # ma visualize_random_samples di solito gestisce batch=1 o liste.
     )
 
     setup_projection_utils(dataset_root)
 
     model_path = f"{checkpoint_dir}/best_model.pth"
     
-    # 2. Carica la classe modello corretta (FusionPoseModel)
+    # 2. Load model
     print(f"Loading FusionPoseModel from {model_path}...")
     model = load_model(model_path, device, FusionPoseModel)
 
-    # 3. Lancia la visualizzazione
+    # 3. Visualize random samples
     visualize_random_samples(
         model,
         test_dataset,
         device,
-        inference_func=fusion_inference, # Usa la nuova funzione
+        inference_func=fusion_inference,
         gt_func=gt_func,
         num_samples=num_samples,
         model_name='DenseFusion',

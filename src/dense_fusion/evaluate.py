@@ -3,10 +3,8 @@ import torch
 from src.model_evaluation import evalutation_pipeline
 from utils.linemod_config import get_linemod_config
 from utils.load_data import load_model_data, load_model
-# --- MODIFICHE PER DENSEFUSION ---
-from src.dense_fusion.model import FusionPoseModel         # Importa il modello corretto
-from src.dense_fusion.dataset import DenseFusionLineModDataset # Importa il dataset corretto
-# ---------------------------------
+from src.dense_fusion.model import FusionPoseModel         
+from src.dense_fusion.dataset import DenseFusionLineModDataset 
 from torch.utils.data import DataLoader
 import os
 
@@ -20,7 +18,7 @@ def evaluate_DENSEFUSION(
     DATASET_ROOT = dataset_root
     OUTPUT_PATH = output_path
     
-    # Check preventivo per evitare FileNotFoundError
+    # Check if model file exists
     if not os.path.exists(MODEL_PATH):
         raise FileNotFoundError(f"❌ Errore: Il file del modello non esiste in: {MODEL_PATH}\nControlla la variabile 'checkpoint_path' del training precedente.")
 
@@ -32,16 +30,16 @@ def evaluate_DENSEFUSION(
     print(f"📦 Loading trained DenseFusion model from {MODEL_PATH}...")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    # --- CARICAMENTO MODELLO DENSEFUSION ---
+    # --- LOAD MODEL DENSEFUSION ---
     model = load_model(
         checkpoint_location=MODEL_PATH,
         device=device,
-        model_class=FusionPoseModel,  # Usa la classe Fusion
+        model_class=FusionPoseModel,
         num_points=1024
     )
 
     print("📚 Preparing test dataset and dataloader...")
-    # --- CARICAMENTO DATASET DENSEFUSION ---
+    # --- LOAD DATASET ---
     test_dataset = DenseFusionLineModDataset(
         root_dir=DATASET_ROOT,
         split="test",
@@ -51,15 +49,15 @@ def evaluate_DENSEFUSION(
     test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False, num_workers=2)
 
     def prediction_function(model, batch, device):
-        # Estrai i dati necessari per DenseFusion
+        # Unwrap input data
         points = batch['points'].to(device)
         images = batch['rgb'].to(device)   # RGB Images
         centroids = batch['centroid'].to(device)
 
-        # Forward pass con ENTRAMBI gli input
+        # Forward pass
         pred_q, pred_t_residual = model(points, images)
 
-        # Ricostruisci la traslazione assoluta
+        # Absolute translation
         pred_t = pred_t_residual + centroids
 
         return pred_q, pred_t
@@ -69,7 +67,7 @@ def evaluate_DENSEFUSION(
         gt_trans = batch['gt_translation'].to(device)
         return gt_quats, gt_trans
 
-    # Pipeline di valutazione standard
+    # Standard evaluation pipeline
     df = evalutation_pipeline(
         model, 
         test_loader,
@@ -79,7 +77,7 @@ def evaluate_DENSEFUSION(
         model_points,
         diameters,
         report_file_path=OUTPUT_PATH,
-        um='mm' # Assicurati che l'unità corrisponda al dataset (di solito i modelli 3D sono in mm)
+        um='mm'
     )
 
     return df

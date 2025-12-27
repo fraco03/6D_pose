@@ -1,4 +1,4 @@
-from utils.linemod_config import LineModConfig, get_linemod_config
+from utils.linemod_config import get_linemod_config
 
 config = None
 
@@ -16,7 +16,6 @@ def setup_projection_utils(dataset_root: str):
 import cv2
 import numpy as np
 from typing import Union
-import torch
 from os import path
 
 from src.pose_rgb.pose_utils import quaternion_to_rotation_matrix
