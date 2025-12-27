@@ -11,7 +11,7 @@ import random
 import shutil
 import requests
 from collections import defaultdict
-
+import csv
 
 def compute_iou(box1, box2):
     """Calculate IoU between two bounding boxes in [x1, y1, x2, y2] format"""
