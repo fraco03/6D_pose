@@ -187,7 +187,7 @@ If you use this work in your research, please cite:
 ```bibtex
 @article{carollo2024robust6dpose,
   title={Robust 6D Object Pose Estimation in Cluttered Scenes via Object-Aware Geometric Learning},
-  author={Carollo, Federico and Benvenuti, Alessandro and Borrelli, Francesco},
+  author={Carollo, Federico and Benvenuti, Alessandro and Borrelli, Francesco and Scala, Tobias},
   journal={Advanced Machine Learning Course Project},
   year={2024},
   institution={Politecnico di Torino}
@@ -196,6 +196,6 @@ If you use this work in your research, please cite:
 
 ---
 
-**Project Members:** Federico Carollo, Alessandro Benvenuti, Francesco Borrelli  
+**Project Members:** Federico Carollo, Alessandro Benvenuti, Francesco Borrelli, Tobias Scala
 **Institution:** Politecnico di Torino  
 **Course:** Advanced Machine Learning
