@@ -196,6 +196,6 @@ If you use this work in your research, please cite:
 
 ---
 
-**Project Members:** Federico Carollo, Alessandro Benvenuti, Francesco Borrelli, Tobias Scala
+**Project Members:** Federico Carollo, Alessandro Benvenuti, Francesco Borrelli, Tobias Scala  
 **Institution:** Politecnico di Torino  
 **Course:** Advanced Machine Learning
