@@ -185,11 +185,11 @@ See [Quick Start](#quick-start) for placement instructions.
 If you use this work in your research, please cite:
 
 ```bibtex
-@article{carollo2024robust6dpose,
+@article{carollo2026robust6dpose,
   title={Robust 6D Object Pose Estimation in Cluttered Scenes via Object-Aware Geometric Learning},
   author={Carollo, Federico and Benvenuti, Alessandro and Borrelli, Francesco and Scala, Tobias},
   journal={Advanced Machine Learning Course Project},
-  year={2024},
+  year={2026},
   institution={Politecnico di Torino}
 }
 ```
