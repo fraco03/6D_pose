@@ -6,7 +6,7 @@ class PointNetPoseModel(nn.Module):
     def __init__(self, num_points=1024):
         super(PointNetPoseModel, self).__init__()
         
-        # --- PointNet Encoder (MLP su ogni punto) ---
+        # --- PointNet Encoder (MLP on each point) ---
         # Input: (Batch, 3, Num_Points)
         self.conv1 = nn.Conv1d(3, 64, 1)
         self.conv2 = nn.Conv1d(64, 128, 1)
@@ -42,7 +42,7 @@ class PointNetPoseModel(nn.Module):
         x = F.relu(self.bn2(self.conv2(x)))
         x = F.relu(self.bn3(self.conv3(x)))
         
-        # Max Pooling (Symmetric Function) -> Ottiene feature globale
+        # Max Pooling (Symmetric Function) -> Global Feature
         x = torch.max(x, 2, keepdim=False)[0] # (Batch, 1024)
         
         # MLP

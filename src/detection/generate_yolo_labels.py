@@ -6,22 +6,18 @@ from pathlib import Path
 from ultralytics import YOLO
 from tqdm import tqdm
 
-
-
 # Mapping: Linemod Folder Name -> YOLO Class ID
-# Assumendo che le cartelle siano '1', '2'... e YOLO sia 0, 1...
-# Modifica questo dizionario se i tuoi ID sono diversi
 LINEMOD_TO_YOLO_ID = {
     '1': 0,   # ape
     '2': 1,   # benchvise
-    # '3': bowl (non presente nel tuo yolo, quindi lo saltiamo)
+    # '3': bowl
     '4': 2,   # camera
     '5': 3,   # can
     '6': 4,   # cat
-    # '7': cup (non presente nel tuo yolo)
+    # '7': cup
     '8': 5,   # driller
     '9': 6,   # duck
-    '10': 7,  # eggbox (Conferma: Folder 10 -> Yolo 7)
+    '10': 7,  # eggbox
     '11': 8,  # glue
     '12': 9,  # holepuncher
     '13': 10, # iron
@@ -31,86 +27,76 @@ LINEMOD_TO_YOLO_ID = {
 
 def load_yaml(path):
     with open(path, 'r') as f:
-        # Loader sicuro per evitare esecuzione di codice arbitrario
         return yaml.load(f, Loader=yaml.SafeLoader)
 
 def save_yaml(data, path):
     with open(path, 'w') as f:
-        # default_flow_style=None mantiene un formato leggibile
         yaml.dump(data, f, default_flow_style=None, sort_keys=False)
 
 def main(LINEMOD_ROOT: Path, OUTPUT_ROOT: Path, MODEL_PATH: str, CONF_THRESHOLD: float):
-    # 1. Carica il modello
+    # 1. Load YOLO model
     print(f"Caricamento modello YOLO da {MODEL_PATH}...")
     model = YOLO(MODEL_PATH)
 
-    # 2. Itera sulle cartelle degli oggetti (es. '1', '2', etc.)
+    # 2. Iterate over Linemod object folders
     obj_folders = [f for f in os.listdir(LINEMOD_ROOT) if (LINEMOD_ROOT / f).is_dir()]
     
-    # Ordiniamo convertendo a int per sicurezza (così 10 viene dopo 2, e non dopo 1)
+    # Sort numerically where possible
     obj_folders.sort(key=lambda x: int(x) if x.isdigit() else x)
 
     for obj_folder in obj_folders:
-        # TRUCCO: Convertiamo il nome cartella in int e poi di nuovo in stringa.
-        # In questo modo:
-        # "01" diventa 1 -> "1" (trova la chiave nel dizionario)
-        # "1"  diventa 1 -> "1" (funziona uguale)
-        # "10" diventa 10 -> "10"
         try:
             key_lookup = str(int(obj_folder))
         except ValueError:
-            # Se c'è una cartella che non è un numero (es. "info"), la saltiamo
             continue
 
-        # Verifica se abbiamo un mapping per questo oggetto usando la chiave normalizzata
+        # Verify if object is in mapping
         if key_lookup not in LINEMOD_TO_YOLO_ID:
             print(f"Skipping cartella '{obj_folder}' (Key: {key_lookup}): ID non presente nel mapping.")
             continue
 
         target_yolo_class = LINEMOD_TO_YOLO_ID[key_lookup]
         
-        # Percorsi (Nota: per il path usiamo obj_folder originale che può essere "01")
         input_dir = LINEMOD_ROOT / obj_folder
-        output_dir = OUTPUT_ROOT / obj_folder # Creerà output/01/yolo.yml
+        output_dir = OUTPUT_ROOT / obj_folder # Will create output/01/yolo.yml
         gt_path = input_dir / 'gt.yml'
         
         if not gt_path.exists():
             print(f"File gt.yml non trovato in {obj_folder}")
             continue
 
-        # Crea directory di destinazione
+        # Create output directory if not exists
         output_dir.mkdir(parents=True, exist_ok=True)
         
-        print(f"Processando oggetto: {obj_folder} (Key: {key_lookup} -> YOLO Class: {target_yolo_class})")
+        print(f"Processing object: {obj_folder} (Key: {key_lookup} -> YOLO Class: {target_yolo_class})")
         
-        # Carica GT originale
+        # Load GT annotations
         gt_data = load_yaml(gt_path)
-        yolo_data = {} # Nuovo dizionario per yolo.yaml
+        yolo_data = {}
 
-        # Itera su ogni frame presente nel gt.yml
-        # gt_data è strutturato come { frame_id: [ {obj_data}, ... ] }
+        # Iterate through each frame in the gt.yml
+        # gt_data is structured as { frame_id: [ {obj_data}, ... ] }
         for frame_id, annotations in tqdm(gt_data.items(), desc=f"Frames Obj {obj_folder}"):
             
-            # Costruisci path immagine (assumendo formato 0000.png)
+            # Construct image path (e.g. 0000.png)
             img_name = f"{frame_id:04d}.png"
             img_path = input_dir / 'rgb' / img_name
             
             if not img_path.exists():
-                # Fallback se l'immagine non esiste (raro)
+                # Fallback: keep original annotations if image missing
                 yolo_data[frame_id] = annotations
                 continue
 
-            # Esegui Inferenza YOLO
+            # Execute YOLO prediction
             results = model.predict(source=str(img_path), conf=CONF_THRESHOLD, verbose=False)
             
-            # Prepara la lista di annotazioni per questo frame (copia profonda per sicurezza)
+
+            # Prepare new annotations list
             new_annotations = []
-            
-            # Nota: Linemod spesso ha 1 oggetto per frame, ma la struttura è una lista.
-            # Qui assumiamo di processare l'annotazione corrispondente all'oggetto della cartella.
+
             
             for ann in annotations:
-                # Copia i dati originali (cam_R, cam_t, obj_id)
+                # Copy original data (cam_R, cam_t, obj_id)
                 new_ann = ann.copy()
                 original_bb = ann['obj_bb'] # [x, y, w, h]
                 
@@ -118,42 +104,42 @@ def main(LINEMOD_ROOT: Path, OUTPUT_ROOT: Path, MODEL_PATH: str, CONF_THRESHOLD:
                 best_conf = -1
                 best_box = None
 
-                # Cerca tra le detection di YOLO quella corretta
+                # Look for best matching YOLO detection
                 if len(results) > 0:
                     for box in results[0].boxes:
                         cls_id = int(box.cls[0])
                         conf = float(box.conf[0])
                         
-                        # Se la classe combacia con l'oggetto corrente
+                        # If cls_id matches target object class
                         if cls_id == target_yolo_class:
-                            # Se ci sono più istanze, prendiamo quella con confidenza maggiore
+                            # If more instances, take the one with highest confidence
                             if conf > best_conf:
                                 best_conf = conf
-                                # YOLO ritorna xyxy, salviamo per dopo
+                                # YOLO returns xyxy, save as xywh
                                 x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
-                                # Converti in xywh per formato Linemod
+                                # Convert to xywh format
                                 w = x2 - x1
                                 h = y2 - y1
                                 best_box = [int(x1), int(y1), int(w), int(h)]
                                 found_yolo = True
 
-                # Logica di assegnazione
+                # Assign the best YOLO box if found, else fallback to GT
                 if found_yolo and best_box is not None:
                     new_ann['obj_bb'] = best_box
                     new_ann['is_yolo'] = True
-                    # Opzionale: salva anche la confidence
+                    # Save confidence rounded to 4 decimals
                     new_ann['yolo_conf'] = float(round(best_conf, 4))
                 else:
-                    # FALLBACK A GT
+                    # FALLBACK TO GT
                     new_ann['obj_bb'] = original_bb
                     new_ann['is_yolo'] = False
                 
                 new_annotations.append(new_ann)
             
-            # Salva nel dizionario finale
+            # Save new annotations for the frame
             yolo_data[frame_id] = new_annotations
 
-        # Scrivi yolo.yaml nella nuova destinazione
+        # Write yolo.yml in the new destination
         save_path = output_dir / 'yolo.yml'
         save_yaml(yolo_data, save_path)
         print(f"Salvato: {save_path}")
